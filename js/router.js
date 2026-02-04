@@ -321,17 +321,14 @@ class Router {
     }
 
     /**
-     * קיבוץ תלושים לפי שם בעלים
-     */
-    /**
      * קיבוץ תלושים לפי שם בעלים (מתעלם מתגיות אזהרה בשם)
      */
     groupVouchersByOwner(vouchers) {
         const grouped = {};
         for (const voucher of vouchers) {
             // ניקוי השם מאזהרות לצורך הקיבוץ
-            // מוחק את התבנית {warning:123} ומנקה רווחים
-            const cleanName = voucher.ownerName.replace(/\{warning:\d+\}/, '').trim();
+            // מוחק את התבנית {warning:...} כולל מספרים עשרוניים
+            const cleanName = voucher.ownerName.replace(/\{warning:[^}]+\}/, '').trim();
 
             if (!grouped[cleanName]) {
                 grouped[cleanName] = [];
@@ -364,15 +361,16 @@ class Router {
             // חיפוש אזהרה באחד התלושים של הבעלים הזה
             let warningAmount = 0;
             for (const v of ownerVouchers) {
-                const match = v.ownerName.match(/\{warning:(\d+)\}/);
+                const match = v.ownerName.match(/\{warning:([^}]+)\}/);
                 if (match) {
-                    warningAmount = parseInt(match[1]);
+                    warningAmount = parseFloat(match[1]);
                     break;
                 }
             }
 
             let warningBadge = '';
-            if (warningAmount > 0) {
+            // מציגים אזהרה רק אם הסכום הוא משמעותי (מעל 1 ש"ח או עגול)
+            if (warningAmount > 0.01) {
                 warningBadge = `<span class="badge" style="background: #ffaa00; color: #fff; margin-right: var(--spacing-sm);">⚠️ יתרה לא מנוצלת: ${Utils.formatCurrency(warningAmount)}</span>`;
             }
 
