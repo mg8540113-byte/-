@@ -36,36 +36,192 @@
 
 class DataManager {
     constructor() {
-        this.STORAGE_KEY = 'voucherSystemData';
-        this.data = this.loadData();
+        this.data = {
+            institutions: []
+        };
+        // Data loading is now async via init()
     }
 
-    // ==================== אחסון ====================
-
     /**
-     * טעינת נתונים מ-LocalStorage
+     * טעינת נתונים ראשונית מהענן
      */
-    loadData() {
+    async init() {
         try {
-            const stored = localStorage.getItem(this.STORAGE_KEY);
-            if (stored) {
-                return JSON.parse(stored);
+            console.log('Loading data from Supabase...');
+
+            // טעינת מוסדות
+            const { data: institutions, error: instError } = await window.supabaseClient
+                .from('institutions')
+                .select('*')
+                .order('created_at', { ascending: true });
+
+            if (instError) throw instError;
+
+            // בדיקת מיגרציה: אם אין כלום בענן, ננסה לייבא לוקאלית
+            if (institutions.length === 0) {
+                console.log('Cloud is empty. Checking for migration...');
+                await this.migrateFromLocalStorage();
+                // אחרי המיגרציה נטען שוב (רקורסיבי אבל מבוקר כי אז יהיה דאטה)
+                // נקרא שוב ל-Supabase "ידנית" כדי למלא את ה-state
+                // או שפשוט נחזיר true וזה יטען בפעם הבאה?
+                // עדיף לטעון:
+                return this.init();
             }
+
+            this.data.institutions = [];
+
+            for (const inst of institutions) {
+                // טעינת קבוצות לכל מוסד
+                const { data: groups, error: groupError } = await window.supabaseClient
+                    .from('groups')
+                    .select('*')
+                    .eq('institution_id', inst.id)
+                    .order('created_at', { ascending: true });
+
+                if (groupError) throw groupError;
+
+                const groupsWithVouchers = [];
+                for (const group of groups) {
+                    // טעינת תלושים לכל קבוצה
+                    const { data: vouchers, error: voucherError } = await window.supabaseClient
+                        .from('vouchers')
+                        .select('*')
+                        .eq('group_id', group.id)
+                        .order('created_at', { ascending: false });
+
+                    if (voucherError) throw voucherError;
+
+                    // מיפוי נתונים (Snake Case -> Camel Case)
+                    const mappedVouchers = vouchers.map(v => ({
+                        id: v.id,
+                        ownerName: v.owner_name,
+                        barcode: v.barcode,
+                        faceValue: Number(v.face_value),
+                        paidAmount: Number(v.paid_amount),
+                        hasWarning: v.has_warning,
+                        createdAt: v.created_at
+                    }));
+
+                    groupsWithVouchers.push({
+                        id: group.id,
+                        name: group.name,
+                        institutionSubsidyPercent: Number(group.institution_subsidy_percent),
+                        adminSubsidyPercent: Number(group.admin_subsidy_percent),
+                        createdAt: group.created_at,
+                        vouchers: mappedVouchers
+                    });
+                }
+
+                this.data.institutions.push({
+                    id: inst.id,
+                    name: inst.name,
+                    createdAt: inst.created_at,
+                    groups: groupsWithVouchers
+                });
+            }
+
+            console.log('Data loaded successfully from Cloud');
+            return true;
         } catch (error) {
-            console.error('Error loading data:', error);
+            console.error('Error loading data from Supabase:', error);
+            Utils.showToast('שגיאה בטעינת נתונים מהענן', 'error');
+            return false;
         }
-        return { institutions: [] };
     }
 
     /**
-     * שמירת נתונים ל-LocalStorage
+     * מיגרציה מ-LocalStorage ל-Supabase
      */
-    saveData() {
+    async migrateFromLocalStorage() {
         try {
-            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.data));
+            const stored = localStorage.getItem('voucherSystemData');
+            if (!stored) return;
+
+            const localData = JSON.parse(stored);
+            if (!localData.institutions || localData.institutions.length === 0) return;
+
+            console.log('Migrating data from LocalStorage:', localData);
+            Utils.showToast('מבצע מיגרציה של נתונים לענן...', 'info');
+
+            for (const inst of localData.institutions) {
+                // יצירת מוסד
+                const { error: instError } = await window.supabaseClient
+                    .from('institutions')
+                    .insert([{ id: inst.id, name: inst.name }]);
+
+                if (instError) throw instError;
+
+                for (const group of inst.groups) {
+                    // יצירת קבוצה
+                    const { error: groupError } = await window.supabaseClient
+                        .from('groups')
+                        .insert([{
+                            id: group.id,
+                            institution_id: inst.id,
+                            name: group.name,
+                            institution_subsidy_percent: group.institutionSubsidyPercent,
+                            admin_subsidy_percent: group.adminSubsidyPercent
+                        }]);
+
+                    if (groupError) throw groupError;
+
+                    // הכנת תלושים
+                    const vouchersToInsert = group.vouchers.map(v => ({
+                        id: v.id,
+                        group_id: group.id,
+                        owner_name: v.ownerName,
+                        barcode: v.barcode,
+                        face_value: v.faceValue,
+                        paid_amount: v.paidAmount,
+                        has_warning: v.hasWarning,
+                        created_at: v.createdAt
+                    }));
+
+                    if (vouchersToInsert.length > 0) {
+                        const { error: voucherError } = await window.supabaseClient
+                            .from('vouchers')
+                            .insert(vouchersToInsert);
+
+                        if (voucherError) throw voucherError;
+                    }
+                }
+            }
+
+            Utils.showToast('המיגרציה הושלמה בהצלחה!');
+            console.log('Migration completed');
+
         } catch (error) {
-            console.error('Error saving data:', error);
-            Utils.showToast('שגיאה בשמירת הנתונים', 'error');
+            console.error('Migration failed:', error);
+            Utils.showToast('שגיאה במיגרציה נתונים', 'error');
+        }
+    }
+
+    // ==================== מוסדות (Async) ====================
+
+    /**
+     * הוספת מוסד חדש
+     */
+    async addInstitution(name) {
+        const id = Utils.generateId();
+        try {
+            const { error } = await window.supabaseClient
+                .from('institutions')
+                .insert([{ id, name }]);
+
+            if (error) throw error;
+
+            const institution = {
+                id,
+                name: name,
+                createdAt: new Date().toISOString(),
+                groups: []
+            };
+            this.data.institutions.push(institution);
+            return institution;
+        } catch (error) {
+            console.error('Error adding institution:', error);
+            Utils.showToast('שגיאה בשמירת מוסד', 'error');
+            throw error;
         }
     }
 
@@ -109,44 +265,55 @@ class DataManager {
         return this.data.institutions.find(inst => inst.id === id);
     }
 
-    /**
-     * הוספת מוסד חדש
-     */
-    addInstitution(name) {
-        const institution = {
-            id: Utils.generateId(),
-            name: name,
-            createdAt: new Date().toISOString(),
-            groups: []
-        };
-        this.data.institutions.push(institution);
-        this.saveData();
-        return institution;
-    }
+    // addInstitution כבר קיים למעלה (אסינכרוני)
 
     /**
      * עריכת מוסד
      */
-    updateInstitution(id, updates) {
-        const institution = this.getInstitution(id);
-        if (institution) {
-            Object.assign(institution, updates);
-            this.saveData();
+    async updateInstitution(id, updates) {
+        try {
+            const { error } = await window.supabaseClient
+                .from('institutions')
+                .update(updates)
+                .eq('id', id);
+
+            if (error) throw error;
+
+            const institution = this.getInstitution(id);
+            if (institution) {
+                Object.assign(institution, updates);
+            }
+            return institution;
+        } catch (error) {
+            console.error('Error updating institution:', error);
+            Utils.showToast('שגיאה בעדכון מוסד', 'error');
+            throw error;
         }
-        return institution;
     }
 
     /**
      * מחיקת מוסד (כולל כל הקבוצות והתלושים)
      */
-    deleteInstitution(id) {
-        const index = this.data.institutions.findIndex(inst => inst.id === id);
-        if (index !== -1) {
-            this.data.institutions.splice(index, 1);
-            this.saveData();
-            return true;
+    async deleteInstitution(id) {
+        try {
+            const { error } = await window.supabaseClient
+                .from('institutions')
+                .delete()
+                .eq('id', id);
+
+            if (error) throw error;
+
+            const index = this.data.institutions.findIndex(inst => inst.id === id);
+            if (index !== -1) {
+                this.data.institutions.splice(index, 1);
+                return true;
+            }
+            return false;
+        } catch (error) {
+            console.error('Error deleting institution:', error);
+            Utils.showToast('שגיאה במחיקת מוסד', 'error');
+            throw error;
         }
-        return false;
     }
 
     /**
@@ -196,65 +363,128 @@ class DataManager {
     }
 
     /**
-     * הוספת קבוצה חדשה למוסד
+     * הוספת קבוצה חדשה למוסד (Async)
      */
-    addGroup(institutionId, name, institutionSubsidyPercent, adminSubsidyPercent) {
+    async addGroup(institutionId, name, institutionSubsidyPercent, adminSubsidyPercent) {
         const institution = this.getInstitution(institutionId);
         if (!institution) return null;
 
+        const id = Utils.generateId();
         const group = {
-            id: Utils.generateId(),
+            id,
+            institution_id: institutionId,
             name: name,
-            institutionSubsidyPercent: Number(institutionSubsidyPercent),
-            adminSubsidyPercent: Number(adminSubsidyPercent),
-            createdAt: new Date().toISOString(),
-            vouchers: []
+            institution_subsidy_percent: Number(institutionSubsidyPercent),
+            admin_subsidy_percent: Number(adminSubsidyPercent)
         };
 
-        institution.groups.push(group);
-        this.saveData();
-        return group;
-    }
+        try {
+            const { error } = await window.supabaseClient
+                .from('groups')
+                .insert([group]);
 
-    /**
-     * עריכת קבוצה
-     */
-    updateGroup(institutionId, groupId, updates) {
-        const group = this.getGroup(institutionId, groupId);
-        if (group) {
-            Object.assign(group, updates);
-            this.saveData();
+            if (error) throw error;
+
+            const newGroup = {
+                id: group.id,
+                name: group.name,
+                institutionSubsidyPercent: group.institution_subsidy_percent,
+                adminSubsidyPercent: group.admin_subsidy_percent,
+                createdAt: new Date().toISOString(),
+                vouchers: []
+            };
+
+            institution.groups.push(newGroup);
+            return newGroup;
+        } catch (error) {
+            console.error('Error adding group:', error);
+            Utils.showToast('שגיאה בשמירת קבוצה', 'error');
+            throw error;
         }
-        return group;
     }
 
     /**
-     * מחיקת קבוצה (כולל כל התלושים)
+     * עריכת קבוצה (Async)
      */
-    deleteGroup(institutionId, groupId) {
+    async updateGroup(institutionId, groupId, updates) {
+        // המרה לפורמט של DB במידת הצורך
+        const dbUpdates = {};
+        if (updates.name !== undefined) dbUpdates.name = updates.name;
+        if (updates.institutionSubsidyPercent !== undefined) dbUpdates.institution_subsidy_percent = updates.institutionSubsidyPercent;
+        if (updates.adminSubsidyPercent !== undefined) dbUpdates.admin_subsidy_percent = updates.adminSubsidyPercent;
+
+        if (Object.keys(dbUpdates).length === 0) return this.getGroup(institutionId, groupId);
+
+        try {
+            const { error } = await window.supabaseClient
+                .from('groups')
+                .update(dbUpdates)
+                .eq('id', groupId);
+
+            if (error) throw error;
+
+            const group = this.getGroup(institutionId, groupId);
+            if (group) {
+                Object.assign(group, updates);
+            }
+            return group;
+        } catch (error) {
+            console.error('Error updating group:', error);
+            Utils.showToast('שגיאה בעדכון קבוצה', 'error');
+            throw error;
+        }
+    }
+
+    /**
+     * מחיקת קבוצה (Async)
+     */
+    async deleteGroup(institutionId, groupId) {
         const institution = this.getInstitution(institutionId);
         if (!institution) return false;
 
-        const index = institution.groups.findIndex(g => g.id === groupId);
-        if (index !== -1) {
-            institution.groups.splice(index, 1);
-            this.saveData();
-            return true;
+        try {
+            const { error } = await window.supabaseClient
+                .from('groups')
+                .delete()
+                .eq('id', groupId);
+
+            if (error) throw error;
+
+            const index = institution.groups.findIndex(g => g.id === groupId);
+            if (index !== -1) {
+                institution.groups.splice(index, 1);
+                return true;
+            }
+            return false;
+        } catch (error) {
+            console.error('Error deleting group:', error);
+            Utils.showToast('שגיאה במחיקת קבוצה', 'error');
+            throw error;
         }
-        return false;
     }
 
     /**
-     * מחיקת כל התלושים מקבוצה
+     * מחיקת כל התלושים מקבוצה (Async)
      */
-    deleteAllVouchersFromGroup(institutionId, groupId) {
+    async deleteAllVouchersFromGroup(institutionId, groupId) {
         const group = this.getGroup(institutionId, groupId);
-        if (group) {
+        if (!group) return false;
+
+        try {
+            const { error } = await window.supabaseClient
+                .from('vouchers')
+                .delete()
+                .eq('group_id', groupId);
+
+            if (error) throw error;
+
             group.vouchers = [];
-            this.saveData();
             return true;
+        } catch (error) {
+            console.error('Error deleting all vouchers:', error);
+            Utils.showToast('שגיאה במחיקת תלושים', 'error');
+            throw error;
         }
-        return false;
     }
 
     /**
@@ -295,7 +525,14 @@ class DataManager {
      * @param {Array} data - נתונים מהאקסל [{name, amount}, ...]
      * @param {Object} distribution - חלוקת אחוזים {50: 20, 100: 30, 200: 50}
      */
-    addVouchersFromExcel(institutionId, groupId, data, distribution) {
+    /**
+     * הוספת תלושים מקובץ Excel (Async Batch Insert)
+     * @param {string} institutionId - ID המוסד
+     * @param {string} groupId - ID הקבוצה
+     * @param {Array} data - נתונים מהאקסל [{name, amount}, ...]
+     * @param {Object} distribution - חלוקת אחוזים {50: 20, 100: 30, 200: 50}
+     */
+    async addVouchersFromExcel(institutionId, groupId, data, distribution) {
         const group = this.getGroup(institutionId, groupId);
         if (!group) return { success: false, error: 'קבוצה לא נמצאה' };
 
@@ -304,12 +541,10 @@ class DataManager {
             created: 0,
             warnings: []
         };
+        const vouchersToInsert = [];
+        const localVouchers = [];
 
-        // לוג לבדיקה
-        console.log('=== יצירת תלושים ===');
-        console.log('חלוקה:', distribution);
-        console.log('סבסוד מוסד:', group.institutionSubsidyPercent, '%');
-        console.log('סבסוד מנהל:', group.adminSubsidyPercent, '%');
+        console.log('=== יצירת תלושים (Supabase) ===');
 
         for (const row of data) {
             const paidAmount = Number(row.amount);
@@ -318,77 +553,109 @@ class DataManager {
                 continue;
             }
 
-            console.log(`--- ${row.name}: ${paidAmount} ₪ ---`);
-
-            // חישוב ערך נקוב כולל (סכום + סבסודים)
+            // חישוב ערך נקוב כולל
             const faceValue = Utils.calculateFaceValue(
                 paidAmount,
                 group.institutionSubsidyPercent,
                 group.adminSubsidyPercent
             );
 
-            console.log(`  ערך נקוב: ${faceValue} ₪`);
-
-            // חלוקת תלושים לפי אחוזים
+            // חלוקת תלושים
             const dist = Utils.distributeVouchers(faceValue, distribution);
-
-            console.log(`  חולק: ${dist.totalAllocated} ₪, שארית: ${dist.remainder} ₪`);
 
             // יצירת תלושים לכל סוג
             for (const denom of [50, 100, 200]) {
                 const count = dist.vouchers[denom]?.count || 0;
-
-                if (count > 0) {
-                    console.log(`    תלוש ${denom}₪: ${count} יחידות`);
-                }
-
                 for (let i = 0; i < count; i++) {
-                    // חישוב paidAmount לכל תלוש: חלק יחסי מהסכום ששולם
-                    // אם totalAllocated > 0, נחשב את החלק היחסי של denom מתוך הסה"כ
                     const voucherPaidAmount = dist.totalAllocated > 0
                         ? (paidAmount * denom) / dist.totalAllocated
                         : 0;
 
-                    const voucher = {
-                        id: Utils.generateId(),
+                    const id = Utils.generateId();
+                    const barcode = Utils.generateBarcode();
+                    const createdAt = new Date().toISOString();
+
+                    // אובייקט ל-DB (Snake Case)
+                    vouchersToInsert.push({
+                        id: id,
+                        group_id: groupId,
+                        owner_name: row.name,
+                        barcode: barcode,
+                        face_value: denom,
+                        paid_amount: voucherPaidAmount,
+                        has_warning: dist.hasWarning,
+                        // created_at נוצר אוטומטית אבל נשלח כדי לסנכרן
+                    });
+
+                    // אובייקט ל-Local State (Camel Case)
+                    localVouchers.push({
+                        id: id,
                         ownerName: row.name,
-                        barcode: Utils.generateBarcode(),
+                        barcode: barcode,
                         faceValue: denom,
                         paidAmount: voucherPaidAmount,
-                        createdAt: new Date().toISOString(),
-                        hasWarning: dist.hasWarning
-                    };
-                    group.vouchers.push(voucher);
+                        hasWarning: dist.hasWarning,
+                        createdAt: createdAt
+                    });
                     results.created++;
                 }
             }
 
-            // הוספת אזהרה אם יש שארית
             if (dist.hasWarning) {
                 results.warnings.push(`${row.name}: נותר סכום של ${Utils.formatCurrency(dist.remainder)} שלא חולק`);
             }
         }
 
-        console.log(`=== נוצרו ${results.created} תלושים ===`);
+        if (vouchersToInsert.length === 0) {
+            return results;
+        }
 
-        this.saveData();
-        return results;
+        try {
+            // Batch Insert ל-Supabase
+            const { error } = await window.supabaseClient
+                .from('vouchers')
+                .insert(vouchersToInsert);
+
+            if (error) throw error;
+
+            console.log(`Saved ${vouchersToInsert.length} vouchers to Cloud`);
+
+            // עדכון ה-State המקומי
+            group.vouchers.push(...localVouchers);
+            return results;
+        } catch (error) {
+            console.error('Error saving vouchers to Supabase:', error);
+            Utils.showToast('שגיאה בשמירת התלושים בענן', 'error');
+            return { success: false, error: error.message, created: 0, warnings: results.warnings };
+        }
     }
 
     /**
-     * מחיקת תלוש בודד
+     * מחיקת תלוש בודד (Async)
      */
-    deleteVoucher(institutionId, groupId, voucherId) {
+    async deleteVoucher(institutionId, groupId, voucherId) {
         const group = this.getGroup(institutionId, groupId);
         if (!group) return false;
 
-        const index = group.vouchers.findIndex(v => v.id === voucherId);
-        if (index !== -1) {
-            group.vouchers.splice(index, 1);
-            this.saveData();
-            return true;
+        try {
+            const { error } = await window.supabaseClient
+                .from('vouchers')
+                .delete()
+                .eq('id', voucherId);
+
+            if (error) throw error;
+
+            const index = group.vouchers.findIndex(v => v.id === voucherId);
+            if (index !== -1) {
+                group.vouchers.splice(index, 1);
+                return true;
+            }
+            return false;
+        } catch (error) {
+            console.error('Error deleting voucher:', error);
+            Utils.showToast('שגיאה במחיקת תלוש', 'error');
+            throw error;
         }
-        return false;
     }
 
     /**

@@ -7,7 +7,14 @@ const App = {
     /**
      * אתחול האפליקציה
      */
-    init() {
+    async init() {
+        // אתחול דאטה מנג'ר (טעינת נתונים מהענן)
+        const initialized = await dataManager.init();
+
+        if (!initialized) {
+            Utils.showToast('שגיאה בהתחברות לשרת הנתונים', 'error');
+        }
+
         // ניווט לדשבורד
         router.navigate('dashboard');
 
@@ -113,26 +120,35 @@ const App = {
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-ghost" onclick="closeModal()">ביטול</button>
-                    <button type="submit" class="btn btn-primary">הוסף מוסד</button>
+                    <button type="submit" class="btn btn-primary" id="saveBtn">הוסף מוסד</button>
                 </div>
             </form>
         `;
         this.openModal('הוספת מוסד חדש', content);
     },
 
-    addInstitution(event) {
+    async addInstitution(event) {
         event.preventDefault();
         const name = document.getElementById('institutionName').value.trim();
+        const btn = document.getElementById('saveBtn');
 
         if (!name) {
             Utils.showToast('יש להזין שם מוסד', 'error');
             return;
         }
 
-        dataManager.addInstitution(name);
-        this.closeModal();
-        router.refresh();
-        Utils.showToast(`המוסד "${name}" נוסף בהצלחה`);
+        btn.disabled = true;
+        btn.textContent = 'שומר...';
+
+        try {
+            await dataManager.addInstitution(name);
+            this.closeModal();
+            router.refresh();
+            Utils.showToast(`המוסד "${name}" נוסף בהצלחה`);
+        } catch (error) {
+            btn.disabled = false;
+            btn.textContent = 'הוסף מוסד';
+        }
     },
 
     showEditInstitutionModal(id) {
@@ -147,26 +163,35 @@ const App = {
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-ghost" onclick="closeModal()">ביטול</button>
-                    <button type="submit" class="btn btn-primary">שמור</button>
+                    <button type="submit" class="btn btn-primary" id="saveBtn">שמור</button>
                 </div>
             </form>
         `;
         this.openModal('עריכת מוסד', content);
     },
 
-    updateInstitution(event, id) {
+    async updateInstitution(event, id) {
         event.preventDefault();
         const name = document.getElementById('institutionName').value.trim();
+        const btn = document.getElementById('saveBtn');
 
         if (!name) {
             Utils.showToast('יש להזין שם מוסד', 'error');
             return;
         }
 
-        dataManager.updateInstitution(id, { name });
-        this.closeModal();
-        router.refresh();
-        Utils.showToast('המוסד עודכן בהצלחה');
+        btn.disabled = true;
+        btn.textContent = 'שומר...';
+
+        try {
+            await dataManager.updateInstitution(id, { name });
+            this.closeModal();
+            router.refresh();
+            Utils.showToast('המוסד עודכן בהצלחה');
+        } catch (error) {
+            btn.disabled = false;
+            btn.textContent = 'שמור';
+        }
     },
 
     confirmDeleteInstitution(id) {
@@ -180,20 +205,33 @@ const App = {
             </div>
             <div class="form-actions">
                 <button class="btn btn-ghost" onclick="closeModal()">ביטול</button>
-                <button class="btn btn-danger" onclick="App.deleteInstitution('${id}')">מחק מוסד</button>
+                <button class="btn btn-danger" onclick="App.deleteInstitution('${id}')" id="deleteBtn">מחק מוסד</button>
             </div>
         `;
         this.openModal('מחיקת מוסד', content);
     },
 
-    deleteInstitution(id) {
+    async deleteInstitution(id) {
         const institution = dataManager.getInstitution(id);
         const name = institution?.name || '';
+        const btn = document.getElementById('deleteBtn');
 
-        dataManager.deleteInstitution(id);
-        this.closeModal();
-        router.navigate('dashboard');
-        Utils.showToast(`המוסד "${name}" נמחק`);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'מוחק...';
+        }
+
+        try {
+            await dataManager.deleteInstitution(id);
+            this.closeModal();
+            router.navigate('dashboard');
+            Utils.showToast(`המוסד "${name}" נמחק`);
+        } catch (error) {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'מחק מוסד';
+            }
+        }
     },
 
     // ==================== קבוצות ====================
@@ -217,28 +255,37 @@ const App = {
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-ghost" onclick="closeModal()">ביטול</button>
-                    <button type="submit" class="btn btn-primary">הוסף קבוצה</button>
+                    <button type="submit" class="btn btn-primary" id="saveBtn">הוסף קבוצה</button>
                 </div>
             </form>
         `;
         this.openModal('הוספת קבוצה חדשה', content);
     },
 
-    addGroup(event, institutionId) {
+    async addGroup(event, institutionId) {
         event.preventDefault();
         const name = document.getElementById('groupName').value.trim();
         const institutionSubsidy = document.getElementById('institutionSubsidy').value;
         const adminSubsidy = document.getElementById('adminSubsidy').value;
+        const btn = document.getElementById('saveBtn');
 
         if (!name) {
             Utils.showToast('יש להזין שם קבוצה', 'error');
             return;
         }
 
-        dataManager.addGroup(institutionId, name, institutionSubsidy, adminSubsidy);
-        this.closeModal();
-        router.refresh();
-        Utils.showToast(`הקבוצה "${name}" נוספה בהצלחה`);
+        btn.disabled = true;
+        btn.textContent = 'שומר...';
+
+        try {
+            await dataManager.addGroup(institutionId, name, institutionSubsidy, adminSubsidy);
+            this.closeModal();
+            router.refresh();
+            Utils.showToast(`הקבוצה "${name}" נוספה בהצלחה`);
+        } catch (error) {
+            btn.disabled = false;
+            btn.textContent = 'הוסף קבוצה';
+        }
     },
 
     showEditGroupModal(institutionId, groupId) {
@@ -261,27 +308,36 @@ const App = {
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-ghost" onclick="closeModal()">ביטול</button>
-                    <button type="submit" class="btn btn-primary">שמור</button>
+                    <button type="submit" class="btn btn-primary" id="saveBtn">שמור</button>
                 </div>
             </form>
         `;
         this.openModal('עריכת קבוצה', content);
     },
 
-    updateGroup(event, institutionId, groupId) {
+    async updateGroup(event, institutionId, groupId) {
         event.preventDefault();
         const name = document.getElementById('groupName').value.trim();
         const institutionSubsidyPercent = Number(document.getElementById('institutionSubsidy').value);
         const adminSubsidyPercent = Number(document.getElementById('adminSubsidy').value);
+        const btn = document.getElementById('saveBtn');
 
-        dataManager.updateGroup(institutionId, groupId, {
-            name,
-            institutionSubsidyPercent,
-            adminSubsidyPercent
-        });
-        this.closeModal();
-        router.refresh();
-        Utils.showToast('הקבוצה עודכנה בהצלחה');
+        btn.disabled = true;
+        btn.textContent = 'שומר...';
+
+        try {
+            await dataManager.updateGroup(institutionId, groupId, {
+                name,
+                institutionSubsidyPercent,
+                adminSubsidyPercent
+            });
+            this.closeModal();
+            router.refresh();
+            Utils.showToast('הקבוצה עודכנה בהצלחה');
+        } catch (error) {
+            btn.disabled = false;
+            btn.textContent = 'שמור';
+        }
     },
 
     confirmDeleteGroup(institutionId, groupId) {
@@ -295,20 +351,33 @@ const App = {
             </div>
             <div class="form-actions">
                 <button class="btn btn-ghost" onclick="closeModal()">ביטול</button>
-                <button class="btn btn-danger" onclick="App.deleteGroup('${institutionId}', '${groupId}')">מחק קבוצה</button>
+                <button class="btn btn-danger" onclick="App.deleteGroup('${institutionId}', '${groupId}')" id="deleteBtn">מחק קבוצה</button>
             </div>
         `;
         this.openModal('מחיקת קבוצה', content);
     },
 
-    deleteGroup(institutionId, groupId) {
+    async deleteGroup(institutionId, groupId) {
         const group = dataManager.getGroup(institutionId, groupId);
         const name = group?.name || '';
+        const btn = document.getElementById('deleteBtn');
 
-        dataManager.deleteGroup(institutionId, groupId);
-        this.closeModal();
-        router.navigate('institution', { id: institutionId });
-        Utils.showToast(`הקבוצה "${name}" נמחקה`);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'מוחק...';
+        }
+
+        try {
+            await dataManager.deleteGroup(institutionId, groupId);
+            this.closeModal();
+            router.navigate('institution', { id: institutionId });
+            Utils.showToast(`הקבוצה "${name}" נמחקה`);
+        } catch (error) {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'מחק קבוצה';
+            }
+        }
     },
 
     confirmDeleteAllVouchers(institutionId, groupId) {
@@ -322,26 +391,43 @@ const App = {
             </div>
             <div class="form-actions">
                 <button class="btn btn-ghost" onclick="closeModal()">ביטול</button>
-                <button class="btn btn-danger" onclick="App.deleteAllVouchers('${institutionId}', '${groupId}')">מחק את כל התלושים</button>
+                <button class="btn btn-danger" onclick="App.deleteAllVouchers('${institutionId}', '${groupId}')" id="deleteBtn">מחק את כל התלושים</button>
             </div>
         `;
         this.openModal('מחיקת כל התלושים', content);
     },
 
-    deleteAllVouchers(institutionId, groupId) {
-        dataManager.deleteAllVouchersFromGroup(institutionId, groupId);
-        this.closeModal();
-        router.refresh();
-        Utils.showToast('כל התלושים נמחקו');
+    async deleteAllVouchers(institutionId, groupId) {
+        const btn = document.getElementById('deleteBtn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'מוחק...';
+        }
+
+        try {
+            await dataManager.deleteAllVouchersFromGroup(institutionId, groupId);
+            this.closeModal();
+            router.refresh();
+            Utils.showToast('כל התלושים נמחקו');
+        } catch (error) {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'מחק את כל התלושים';
+            }
+        }
     },
 
     // ==================== תלושים ====================
 
-    deleteVoucher(institutionId, groupId, voucherId) {
+    async deleteVoucher(institutionId, groupId, voucherId) {
         if (confirm('האם למחוק את התלוש?')) {
-            dataManager.deleteVoucher(institutionId, groupId, voucherId);
-            router.refresh();
-            Utils.showToast('התלוש נמחק');
+            try {
+                await dataManager.deleteVoucher(institutionId, groupId, voucherId);
+                router.refresh();
+                Utils.showToast('התלוש נמחק');
+            } catch (error) {
+                // Toast already shown by dataManager
+            }
         }
     },
 
