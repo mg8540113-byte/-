@@ -357,7 +357,19 @@ class Router {
                 <div class="owner-group" style="background: ${bgColor}; border-radius: var(--radius-lg); padding: var(--spacing-md); margin-bottom: var(--spacing-md);">
                     <div class="owner-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-sm); padding-bottom: var(--spacing-sm); border-bottom: 1px solid rgba(0,0,0,0.1);">
                         <div>
-                            <strong style="font-size: var(--font-size-lg);">👤 ${ownerName}</strong>
+                            ${(() => {
+                    // חילוץ שם נקי ואזהרה מהשם (אם קיים)
+                    const warningMatch = ownerName.match(/\{warning:(\d+)\}/);
+                    const displayName = ownerName.replace(/\{warning:\d+\}/, '').trim();
+                    const warningAmount = warningMatch ? parseInt(warningMatch[1]) : 0;
+
+                    let warningBadge = '';
+                    if (warningAmount > 0) {
+                        warningBadge = `<span class="badge" style="background: #ffaa00; color: #fff; margin-right: var(--spacing-sm);">⚠️ יתרה לא מנוצלת: ${Utils.formatCurrency(warningAmount)}</span>`;
+                    }
+
+                    return `<strong style="font-size: var(--font-size-lg);">👤 ${displayName}</strong> ${warningBadge}`;
+                })()}
                             <span class="badge badge-primary" style="margin-right: var(--spacing-sm);">${ownerVouchers.length} תלושים</span>
                             <span class="text-muted">סה"כ: ${Utils.formatCurrency(totalValue)}</span>
                         </div>

@@ -564,7 +564,8 @@ class DataManager {
             const dist = Utils.distributeVouchers(faceValue, distribution);
 
             // יצירת תלושים לכל סוג
-            for (const denom of [50, 100, 200]) {
+            const denominations = [200, 100, 50]; // סדר יצירה
+            for (const denom of denominations) {
                 const count = dist.vouchers[denom]?.count || 0;
                 for (let i = 0; i < count; i++) {
                     const voucherPaidAmount = dist.totalAllocated > 0
@@ -576,10 +577,23 @@ class DataManager {
                     const createdAt = new Date().toISOString();
 
                     // אובייקט ל-DB (Snake Case)
+                    let ownerNameDB = row.name;
+                    // אם זה התלוש הראשון ויש אזהרה, נצמיד את סכום האזהרה לשם (פתרון זמני ללא שינוי סכמה)
+                    if (i === 0 && denom === denominations.find(d => dist.vouchers[d].count > 0) && dist.hasWarning && dist.remainder > 0) {
+                        // בדיקה שזו האיטרציה הראשונה באמת שיצרנו תלוש עבורה
+                    }
+
+                    // לוגיקה פשוטה יותר: נסמן את התלוש הראשון שנוצר עבור האדם הזה
+                    const isFirstVoucherForPerson = vouchersToInsert.filter(v => v.owner_name.startsWith(row.name)).length === 0;
+
+                    if (isFirstVoucherForPerson && dist.hasWarning && dist.remainder > 0) {
+                        ownerNameDB = `${row.name} {warning:${dist.remainder}}`;
+                    }
+
                     vouchersToInsert.push({
                         id: id,
                         group_id: groupId,
-                        owner_name: row.name,
+                        owner_name: ownerNameDB,
                         barcode: barcode,
                         face_value: denom,
                         paid_amount: voucherPaidAmount,
@@ -590,7 +604,7 @@ class DataManager {
                     // אובייקט ל-Local State (Camel Case)
                     localVouchers.push({
                         id: id,
-                        ownerName: row.name,
+                        ownerName: ownerNameDB,
                         barcode: barcode,
                         faceValue: denom,
                         paidAmount: voucherPaidAmount,
