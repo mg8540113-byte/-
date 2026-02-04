@@ -92,45 +92,74 @@ const Utils = {
      * @param {Object} distribution - אובייקט עם אחוזים לכל סוג תלוש {50: 20, 100: 30, 200: 50}
      * @returns {Object} - אובייקט עם כמות תלושים לכל סוג והאם יש שארית
      */
+    /**
+     * חלוקת תלושים לפי אחוזים, עם אופטימיזציה לשאריות
+     * @param {number} totalFaceValue - סך הערך הנקוב
+     * @param {Object} distribution - אובייקט עם אחוזים לכל סוג תלוש {50: 20, 100: 30, 200: 50}
+     * @returns {Object} - אובייקט עם כמות תלושים לכל סוג והאם יש שארית
+     */
     distributeVouchers(totalFaceValue, distribution) {
         const result = {
             vouchers: {},
             totalAllocated: 0,
             remainder: 0,
-            hasWarning: false
+            hasWarning: false,
+            stats: {}
         };
 
-        // שלב 1: חלוקה ראשונית לפי אחוזים
-        const denominations = [200, 100, 50]; // מהגדול לקטן
+        const denominations = [200, 100, 50]; // סדר יורד חשוב לשלב השאריות
+        let currentTotalAllocated = 0;
 
+        // שלב 1: חלוקה לפי אחוזים (ללא חריגה)
         for (const denom of denominations) {
             const percent = distribution[denom] || 0;
             const targetAmount = (totalFaceValue * percent) / 100;
+
+            // כמה תלושים שלמים נכנסים? (תמיד מעגלים למטה, לא חורגים)
             const count = Math.floor(targetAmount / denom);
             const allocated = count * denom;
+            const remainderFromType = targetAmount - allocated;
 
             result.vouchers[denom] = {
                 count: count,
-                allocated: allocated,
-                target: targetAmount
+                allocated: allocated
             };
 
-            result.totalAllocated += allocated;
+            // שמירת נתונים סטטיסטיים לפי בקשת המשתמש
+            // 1. הסכום שעוד לא מומש
+            // 2. כמה אחוז ממה שאמור היה להיכנס - אכן נכנס
+            result.stats[denom] = {
+                unrealizedAmount: remainderFromType,
+                fulfillmentPercent: targetAmount > 0 ? (allocated / targetAmount) * 100 : 0
+            };
+
+            currentTotalAllocated += allocated;
         }
 
-        // שלב 2: ניצול שאריות - ממיר את השארית לתלושים של 50₪
-        result.remainder = totalFaceValue - result.totalAllocated;
+        // שלב 2: טיפול בשאריות (Greedy)
+        // סוכמים את כל השאריות מכל הסוגים (שזה בעצם הסך הכל פחות מה שהצלחנו לשבץ)
+        let remainingGlobal = totalFaceValue - currentTotalAllocated;
 
-        if (result.remainder >= 50) {
-            const extraVouchers50 = Math.floor(result.remainder / 50);
-            result.vouchers[50].count += extraVouchers50;
-            result.vouchers[50].allocated += extraVouchers50 * 50;
-            result.totalAllocated += extraVouchers50 * 50;
-            result.remainder = totalFaceValue - result.totalAllocated;
+        // מנסים להכניס את השארית לתלושים המתאימים (מהגדול לקטן)
+        for (const denom of denominations) {
+            if (remainingGlobal >= denom) {
+                const extraCount = Math.floor(remainingGlobal / denom);
+                const extraValue = extraCount * denom;
 
-            console.log(`  → נוספו ${extraVouchers50} תלושי 50₪ מהשארית`);
+                // עדכון התלושים הקיימים
+                result.vouchers[denom].count += extraCount;
+                result.vouchers[denom].allocated += extraValue;
+
+                currentTotalAllocated += extraValue;
+                remainingGlobal -= extraValue;
+
+                console.log(`  → שארית ${extraValue}₪ הומרה ל-${extraCount} תלושים של ${denom}₪`);
+            }
         }
 
+        // סיכום סופי
+        result.totalAllocated = currentTotalAllocated;
+        result.remainder = remainingGlobal;
         result.hasWarning = result.remainder > 0;
 
         return result;
