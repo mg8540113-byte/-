@@ -359,6 +359,7 @@ class Router {
             const ownerVouchers = vouchersByOwner[cleanName];
             const bgColor = colors[index % colors.length];
             const totalValue = ownerVouchers.reduce((sum, v) => sum + v.faceValue, 0);
+            const totalPaid = ownerVouchers.reduce((sum, v) => sum + v.paidAmount, 0);
 
             // חיפוש אזהרה באחד התלושים של הבעלים הזה
             let warningAmount = 0;
@@ -381,7 +382,16 @@ class Router {
                         <div>
                             <strong style="font-size: var(--font-size-lg);">👤 ${cleanName}</strong> ${warningBadge}
                             <span class="badge badge-primary" style="margin-right: var(--spacing-sm);">${ownerVouchers.length} תלושים</span>
-                            <span class="text-muted">סה"כ: ${Utils.formatCurrency(totalValue)}</span>
+                        </div>
+                        <div style="text-align: left; display: flex; gap: var(--spacing-md); align-items: center;">
+                             <div style="font-size: 0.9em;">
+                                <span class="text-muted">שולם:</span>
+                                <strong>${Utils.formatCurrency(totalPaid)}</strong>
+                             </div>
+                             <div style="font-size: 1.1em;">
+                                <span class="text-muted">שווי שוברים:</span>
+                                <strong style="color: var(--color-primary);">${Utils.formatCurrency(totalValue)}</strong>
+                             </div>
                         </div>
                     </div>
                     <div class="owner-vouchers" style="display: flex; flex-wrap: wrap; gap: var(--spacing-sm);">
