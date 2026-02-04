@@ -323,13 +323,20 @@ class Router {
     /**
      * קיבוץ תלושים לפי שם בעלים
      */
+    /**
+     * קיבוץ תלושים לפי שם בעלים (מתעלם מתגיות אזהרה בשם)
+     */
     groupVouchersByOwner(vouchers) {
         const grouped = {};
         for (const voucher of vouchers) {
-            if (!grouped[voucher.ownerName]) {
-                grouped[voucher.ownerName] = [];
+            // ניקוי השם מאזהרות לצורך הקיבוץ
+            // מוחק את התבנית {warning:123} ומנקה רווחים
+            const cleanName = voucher.ownerName.replace(/\{warning:\d+\}/, '').trim();
+
+            if (!grouped[cleanName]) {
+                grouped[cleanName] = [];
             }
-            grouped[voucher.ownerName].push(voucher);
+            grouped[cleanName].push(voucher);
         }
         return grouped;
     }
@@ -348,28 +355,31 @@ class Router {
             'rgba(255, 159, 67, 0.1)',   // כתום בהיר
         ];
 
-        return ownerNames.map((ownerName, index) => {
-            const ownerVouchers = vouchersByOwner[ownerName];
+        return ownerNames.map((cleanName, index) => {
+            const ownerVouchers = vouchersByOwner[cleanName];
             const bgColor = colors[index % colors.length];
             const totalValue = ownerVouchers.reduce((sum, v) => sum + v.faceValue, 0);
+
+            // חיפוש אזהרה באחד התלושים של הבעלים הזה
+            let warningAmount = 0;
+            for (const v of ownerVouchers) {
+                const match = v.ownerName.match(/\{warning:(\d+)\}/);
+                if (match) {
+                    warningAmount = parseInt(match[1]);
+                    break;
+                }
+            }
+
+            let warningBadge = '';
+            if (warningAmount > 0) {
+                warningBadge = `<span class="badge" style="background: #ffaa00; color: #fff; margin-right: var(--spacing-sm);">⚠️ יתרה לא מנוצלת: ${Utils.formatCurrency(warningAmount)}</span>`;
+            }
 
             return `
                 <div class="owner-group" style="background: ${bgColor}; border-radius: var(--radius-lg); padding: var(--spacing-md); margin-bottom: var(--spacing-md);">
                     <div class="owner-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-sm); padding-bottom: var(--spacing-sm); border-bottom: 1px solid rgba(0,0,0,0.1);">
                         <div>
-                            ${(() => {
-                    // חילוץ שם נקי ואזהרה מהשם (אם קיים)
-                    const warningMatch = ownerName.match(/\{warning:(\d+)\}/);
-                    const displayName = ownerName.replace(/\{warning:\d+\}/, '').trim();
-                    const warningAmount = warningMatch ? parseInt(warningMatch[1]) : 0;
-
-                    let warningBadge = '';
-                    if (warningAmount > 0) {
-                        warningBadge = `<span class="badge" style="background: #ffaa00; color: #fff; margin-right: var(--spacing-sm);">⚠️ יתרה לא מנוצלת: ${Utils.formatCurrency(warningAmount)}</span>`;
-                    }
-
-                    return `<strong style="font-size: var(--font-size-lg);">👤 ${displayName}</strong> ${warningBadge}`;
-                })()}
+                            <strong style="font-size: var(--font-size-lg);">👤 ${cleanName}</strong> ${warningBadge}
                             <span class="badge badge-primary" style="margin-right: var(--spacing-sm);">${ownerVouchers.length} תלושים</span>
                             <span class="text-muted">סה"כ: ${Utils.formatCurrency(totalValue)}</span>
                         </div>
