@@ -45,54 +45,53 @@ class DataManager {
     /**
      * טעינת נתונים ראשונית מהענן
      */
+    /**
+     * טעינת נתונים ראשונית מהענן
+     */
     async init() {
         try {
             console.log('Loading data from Supabase...');
 
-            // טעינת מוסדות
+            // טעינת הכל בקריאה אחת גדולה (Eager Loading)
+            // מביא מוסדות -> קבוצות -> תלושים
             const { data: institutions, error: instError } = await window.supabaseClient
                 .from('institutions')
-                .select('*')
+                .select(`
+                    *,
+                    groups (
+                        *,
+                        vouchers (*)
+                    )
+                `)
                 .order('created_at', { ascending: true });
 
             if (instError) throw instError;
 
             // בדיקת מיגרציה: אם אין כלום בענן, ננסה לייבא לוקאלית
-            if (institutions.length === 0) {
+            if (!institutions || institutions.length === 0) {
                 console.log('Cloud is empty. Checking for migration...');
                 await this.migrateFromLocalStorage();
-                // אחרי המיגרציה נטען שוב (רקורסיבי אבל מבוקר כי אז יהיה דאטה)
-                // נקרא שוב ל-Supabase "ידנית" כדי למלא את ה-state
-                // או שפשוט נחזיר true וזה יטען בפעם הבאה?
-                // עדיף לטעון:
                 return this.init();
             }
 
             this.data.institutions = [];
 
+            // עיבוד הנתונים למבנה של האפליקציה ומיון בצד לקוח (כי מיון מקונן ב-Supabase בסיסי)
             for (const inst of institutions) {
-                // טעינת קבוצות לכל מוסד
-                const { data: groups, error: groupError } = await window.supabaseClient
-                    .from('groups')
-                    .select('*')
-                    .eq('institution_id', inst.id)
-                    .order('created_at', { ascending: true });
 
-                if (groupError) throw groupError;
+                // מיון קבוצות לפי תאריך יצירה
+                const sortedGroups = (inst.groups || []).sort((a, b) =>
+                    new Date(a.created_at) - new Date(b.created_at)
+                );
 
-                const groupsWithVouchers = [];
-                for (const group of groups) {
-                    // טעינת תלושים לכל קבוצה
-                    const { data: vouchers, error: voucherError } = await window.supabaseClient
-                        .from('vouchers')
-                        .select('*')
-                        .eq('group_id', group.id)
-                        .order('created_at', { ascending: false });
-
-                    if (voucherError) throw voucherError;
+                const groupsWithVouchers = sortedGroups.map(group => {
+                    // מיון תלושים לפי תאריך יצירה (מהחדש לישן)
+                    const sortedVouchers = (group.vouchers || []).sort((a, b) =>
+                        new Date(b.created_at) - new Date(a.created_at)
+                    );
 
                     // מיפוי נתונים (Snake Case -> Camel Case)
-                    const mappedVouchers = vouchers.map(v => ({
+                    const mappedVouchers = sortedVouchers.map(v => ({
                         id: v.id,
                         ownerName: v.owner_name,
                         barcode: v.barcode,
@@ -102,15 +101,15 @@ class DataManager {
                         createdAt: v.created_at
                     }));
 
-                    groupsWithVouchers.push({
+                    return {
                         id: group.id,
                         name: group.name,
                         institutionSubsidyPercent: Number(group.institution_subsidy_percent),
                         adminSubsidyPercent: Number(group.admin_subsidy_percent),
                         createdAt: group.created_at,
                         vouchers: mappedVouchers
-                    });
-                }
+                    };
+                });
 
                 this.data.institutions.push({
                     id: inst.id,
@@ -120,7 +119,7 @@ class DataManager {
                 });
             }
 
-            console.log('Data loaded successfully from Cloud');
+            console.log('Data loaded successfully from Cloud (Optimized)');
             return true;
         } catch (error) {
             console.error('Error loading data from Supabase:', error);
