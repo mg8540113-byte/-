@@ -45,7 +45,6 @@ class DataManager {
     /**
      * טעינת נתונים ראשונית מהענן
      */
-    /**
     async init() {
         try {
             console.log('Loading data from Supabase...');
@@ -70,7 +69,7 @@ class DataManager {
             // שלב 2: טעינת כל התלושים במכה אחת (עם הגדלת המגבלה ל-10,000)
             // אנו אוספים את כל ה-ID של הקבוצות כדי להביא רק את התלושים הרלוונטיים (למרות שכרגע זה הכל)
             const allGroupIds = institutions.flatMap(i => (i.groups || []).map(g => g.id));
-            
+
             let allVouchers = [];
             if (allGroupIds.length > 0) {
                 const { data: vouchers, error: voucherError } = await window.supabaseClient
@@ -88,9 +87,9 @@ class DataManager {
 
             // שלב 3: איחוד הנתונים בזיכרון
             for (const inst of institutions) {
-                
+
                 // מיון קבוצות
-                const sortedGroups = (inst.groups || []).sort((a, b) => 
+                const sortedGroups = (inst.groups || []).sort((a, b) =>
                     new Date(a.created_at) - new Date(b.created_at)
                 );
 
@@ -99,7 +98,7 @@ class DataManager {
                     const groupVouchers = allVouchers.filter(v => v.group_id === group.id);
 
                     // מיון תלושים
-                    const sortedVouchers = groupVouchers.sort((a, b) => 
+                    const sortedVouchers = groupVouchers.sort((a, b) =>
                         new Date(b.created_at) - new Date(a.created_at)
                     );
 
