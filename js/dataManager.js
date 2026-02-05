@@ -72,15 +72,32 @@ class DataManager {
 
             let allVouchers = [];
             if (allGroupIds.length > 0) {
-                const { data: vouchers, error: voucherError } = await window.supabaseClient
-                    .from('vouchers')
-                    .select('*')
-                    .in('group_id', allGroupIds)
-                    .limit(10000) // בום! הגדלת המגבלה ל-10,000 תלושים
-                    .order('created_at', { ascending: false });
+                let from = 0;
+                const step = 1000;
+                let more = true;
 
-                if (voucherError) throw voucherError;
-                allVouchers = vouchers;
+                while (more) {
+                    const to = from + step - 1;
+                    const { data: vouchers, error: voucherError } = await window.supabaseClient
+                        .from('vouchers')
+                        .select('*')
+                        .in('group_id', allGroupIds)
+                        .range(from, to)
+                        .order('created_at', { ascending: false });
+
+                    if (voucherError) throw voucherError;
+
+                    if (vouchers.length > 0) {
+                        allVouchers = allVouchers.concat(vouchers);
+                        from += step;
+                        // אם קיבלנו פחות מהצעד, סימן שסיימנו
+                        if (vouchers.length < step) {
+                            more = false;
+                        }
+                    } else {
+                        more = false;
+                    }
+                }
             }
 
             this.data.institutions = [];
