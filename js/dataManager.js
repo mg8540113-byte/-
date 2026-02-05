@@ -69,18 +69,26 @@ class DataManager {
             // שלב 2: טעינת כל התלושים במכה אחת (עם הגדלת המגבלה ל-10,000)
             // אנו אוספים את כל ה-ID של הקבוצות כדי להביא רק את התלושים הרלוונטיים (למרות שכרגע זה הכל)
             const allGroupIds = institutions.flatMap(i => (i.groups || []).map(g => g.id));
-            
+
             let allVouchers = [];
             if (allGroupIds.length > 0) {
                 // פיצול רשימת הקבוצות למנות קטנות כדי למנוע שגיאת URI Too Long
                 const chunkSize = 20; // 20 קבוצות בכל בקשה
-                const chunkPromises = [];
+                // מגבלת מקביליות כדי לא לחנוק את הדפדפן/שרת (Rate Limiting)
+                const maxConcurrency = 5;
+                const allChunks = [];
 
+                // הכנת רשימת המנות לביצוע
                 for (let i = 0; i < allGroupIds.length; i += chunkSize) {
-                    const groupIdsChunk = allGroupIds.slice(i, i + chunkSize);
-                    
-                    // יצירת Promise לכל מנה שתרוץ במקביל
-                    const chunkFetchPromise = (async () => {
+                    allChunks.push(allGroupIds.slice(i, i + chunkSize));
+                }
+
+                // ביצוע במקביל אבל במנות (Waves)
+                const results = [];
+                for (let i = 0; i < allChunks.length; i += maxConcurrency) {
+                    const activeBatch = allChunks.slice(i, i + maxConcurrency);
+
+                    const batchPromises = activeBatch.map(async (groupIdsChunk) => {
                         let chunkVouchers = [];
                         let from = 0;
                         const step = 1000;
@@ -108,15 +116,13 @@ class DataManager {
                             }
                         }
                         return chunkVouchers;
-                    })();
+                    });
 
-                    chunkPromises.push(chunkFetchPromise);
+                    // מחכים שרק הנגלה הזאת תסתיים לפני שעוברים לנגלה הבאה
+                    const batchResults = await Promise.all(batchPromises);
+                    results.push(...batchResults);
                 }
 
-                // המתנה לכל הבקשות שיסתיימו (במקביל!)
-                const results = await Promise.all(chunkPromises);
-                
-                // איחוד כל התוצאות למערך אחד שטוח
                 allVouchers = results.flat();
             }
 
@@ -124,9 +130,9 @@ class DataManager {
 
             // שלב 3: איחוד הנתונים בזיכרון
             for (const inst of institutions) {
-                
+
                 // מיון קבוצות
-                const sortedGroups = (inst.groups || []).sort((a, b) => 
+                const sortedGroups = (inst.groups || []).sort((a, b) =>
                     new Date(a.created_at) - new Date(b.created_at)
                 );
 
@@ -135,7 +141,7 @@ class DataManager {
                     const groupVouchers = allVouchers.filter(v => v.group_id === group.id);
 
                     // מיון תלושים
-                    const sortedVouchers = groupVouchers.sort((a, b) => 
+                    const sortedVouchers = groupVouchers.sort((a, b) =>
                         new Date(b.created_at) - new Date(a.created_at)
                     );
 
@@ -235,7 +241,7 @@ class DataManager {
                         const { error: voucherError } = await window.supabaseClient
                             .from('vouchers')
                             .insert(batch);
-                        
+
                         if (voucherError) throw voucherError;
                     }
                 }
@@ -243,7 +249,7 @@ class DataManager {
 
             console.log('Migration completed successfully');
             Utils.showToast('הנתונים הועברו לענן בהצלחה!', 'success');
-            
+
             // אפשר למחוק את הלוקאל אחרי שבדקנו שהכל עובד
             // localStorage.removeItem('voucherApp_data');
 
@@ -265,7 +271,7 @@ class DataManager {
                 .single();
 
             if (error) throw error;
-            
+
             // רענון נתונים מלא
             await this.init();
             return data;
@@ -327,7 +333,7 @@ class DataManager {
                 const { error } = await window.supabaseClient
                     .from('vouchers')
                     .insert(batch);
-                
+
                 if (error) throw error;
             }
 
