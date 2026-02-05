@@ -72,30 +72,36 @@ class DataManager {
 
             let allVouchers = [];
             if (allGroupIds.length > 0) {
-                let from = 0;
-                const step = 1000;
-                let more = true;
+                // פיצול רשימת הקבוצות למנות קטנות כדי למנוע שגיאת URI Too Long
+                const chunkSize = 20; // 20 קבוצות בכל בקשה
+                for (let i = 0; i < allGroupIds.length; i += chunkSize) {
+                    const groupIdsChunk = allGroupIds.slice(i, i + chunkSize);
 
-                while (more) {
-                    const to = from + step - 1;
-                    const { data: vouchers, error: voucherError } = await window.supabaseClient
-                        .from('vouchers')
-                        .select('*')
-                        .in('group_id', allGroupIds)
-                        .range(from, to)
-                        .order('created_at', { ascending: false });
+                    // עבור כל מנת קבוצות, נבצע דפדוף (Pagination) של תלושים
+                    let from = 0;
+                    const step = 1000;
+                    let more = true;
 
-                    if (voucherError) throw voucherError;
+                    while (more) {
+                        const to = from + step - 1;
+                        const { data: vouchers, error: voucherError } = await window.supabaseClient
+                            .from('vouchers')
+                            .select('*')
+                            .in('group_id', groupIdsChunk)
+                            .range(from, to)
+                            .order('created_at', { ascending: false });
 
-                    if (vouchers.length > 0) {
-                        allVouchers = allVouchers.concat(vouchers);
-                        from += step;
-                        // אם קיבלנו פחות מהצעד, סימן שסיימנו
-                        if (vouchers.length < step) {
+                        if (voucherError) throw voucherError;
+
+                        if (vouchers && vouchers.length > 0) {
+                            allVouchers = allVouchers.concat(vouchers);
+                            from += step;
+                            if (vouchers.length < step) {
+                                more = false;
+                            }
+                        } else {
                             more = false;
                         }
-                    } else {
-                        more = false;
                     }
                 }
             }
