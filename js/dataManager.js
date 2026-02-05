@@ -46,51 +46,64 @@ class DataManager {
      * טעינת נתונים ראשונית מהענן
      */
     /**
-     * טעינת נתונים ראשונית מהענן
-     */
     async init() {
         try {
             console.log('Loading data from Supabase...');
 
-            // טעינת הכל בקריאה אחת גדולה (Eager Loading)
-            // מביא מוסדות -> קבוצות -> תלושים
+            // שלב 1: טעינת מבנה (מוסדות וקבוצות)
             const { data: institutions, error: instError } = await window.supabaseClient
                 .from('institutions')
                 .select(`
                     *,
-                    groups (
-                        *,
-                        vouchers (*)
-                    )
+                    groups (*)
                 `)
                 .order('created_at', { ascending: true });
 
             if (instError) throw instError;
 
-            // בדיקת מיגרציה: אם אין כלום בענן, ננסה לייבא לוקאלית
             if (!institutions || institutions.length === 0) {
                 console.log('Cloud is empty. Checking for migration...');
                 await this.migrateFromLocalStorage();
                 return this.init();
             }
 
+            // שלב 2: טעינת כל התלושים במכה אחת (עם הגדלת המגבלה ל-10,000)
+            // אנו אוספים את כל ה-ID של הקבוצות כדי להביא רק את התלושים הרלוונטיים (למרות שכרגע זה הכל)
+            const allGroupIds = institutions.flatMap(i => (i.groups || []).map(g => g.id));
+            
+            let allVouchers = [];
+            if (allGroupIds.length > 0) {
+                const { data: vouchers, error: voucherError } = await window.supabaseClient
+                    .from('vouchers')
+                    .select('*')
+                    .in('group_id', allGroupIds)
+                    .limit(10000) // בום! הגדלת המגבלה ל-10,000 תלושים
+                    .order('created_at', { ascending: false });
+
+                if (voucherError) throw voucherError;
+                allVouchers = vouchers;
+            }
+
             this.data.institutions = [];
 
-            // עיבוד הנתונים למבנה של האפליקציה ומיון בצד לקוח (כי מיון מקונן ב-Supabase בסיסי)
+            // שלב 3: איחוד הנתונים בזיכרון
             for (const inst of institutions) {
-
-                // מיון קבוצות לפי תאריך יצירה
-                const sortedGroups = (inst.groups || []).sort((a, b) =>
+                
+                // מיון קבוצות
+                const sortedGroups = (inst.groups || []).sort((a, b) => 
                     new Date(a.created_at) - new Date(b.created_at)
                 );
 
                 const groupsWithVouchers = sortedGroups.map(group => {
-                    // מיון תלושים לפי תאריך יצירה (מהחדש לישן)
-                    const sortedVouchers = (group.vouchers || []).sort((a, b) =>
+                    // סינון התלושים ששייכים לקבוצה הזו מתוך המאגר הגדול
+                    const groupVouchers = allVouchers.filter(v => v.group_id === group.id);
+
+                    // מיון תלושים
+                    const sortedVouchers = groupVouchers.sort((a, b) => 
                         new Date(b.created_at) - new Date(a.created_at)
                     );
 
-                    // מיפוי נתונים (Snake Case -> Camel Case)
+                    // מיפוי נתונים
                     const mappedVouchers = sortedVouchers.map(v => ({
                         id: v.id,
                         ownerName: v.owner_name,
@@ -119,7 +132,7 @@ class DataManager {
                 });
             }
 
-            console.log('Data loaded successfully from Cloud (Optimized)');
+            console.log(`Data loaded successfully: ${institutions.length} institutions, ${allVouchers.length} vouchers`);
             return true;
         } catch (error) {
             console.error('Error loading data from Supabase:', error);
