@@ -69,50 +69,64 @@ class DataManager {
             // שלב 2: טעינת כל התלושים במכה אחת (עם הגדלת המגבלה ל-10,000)
             // אנו אוספים את כל ה-ID של הקבוצות כדי להביא רק את התלושים הרלוונטיים (למרות שכרגע זה הכל)
             const allGroupIds = institutions.flatMap(i => (i.groups || []).map(g => g.id));
-
+            
             let allVouchers = [];
             if (allGroupIds.length > 0) {
                 // פיצול רשימת הקבוצות למנות קטנות כדי למנוע שגיאת URI Too Long
                 const chunkSize = 20; // 20 קבוצות בכל בקשה
+                const chunkPromises = [];
+
                 for (let i = 0; i < allGroupIds.length; i += chunkSize) {
                     const groupIdsChunk = allGroupIds.slice(i, i + chunkSize);
+                    
+                    // יצירת Promise לכל מנה שתרוץ במקביל
+                    const chunkFetchPromise = (async () => {
+                        let chunkVouchers = [];
+                        let from = 0;
+                        const step = 1000;
+                        let more = true;
 
-                    // עבור כל מנת קבוצות, נבצע דפדוף (Pagination) של תלושים
-                    let from = 0;
-                    const step = 1000;
-                    let more = true;
+                        while (more) {
+                            const to = from + step - 1;
+                            const { data: vouchers, error: voucherError } = await window.supabaseClient
+                                .from('vouchers')
+                                .select('*')
+                                .in('group_id', groupIdsChunk)
+                                .range(from, to)
+                                .order('created_at', { ascending: false });
 
-                    while (more) {
-                        const to = from + step - 1;
-                        const { data: vouchers, error: voucherError } = await window.supabaseClient
-                            .from('vouchers')
-                            .select('*')
-                            .in('group_id', groupIdsChunk)
-                            .range(from, to)
-                            .order('created_at', { ascending: false });
+                            if (voucherError) throw voucherError;
 
-                        if (voucherError) throw voucherError;
-
-                        if (vouchers && vouchers.length > 0) {
-                            allVouchers = allVouchers.concat(vouchers);
-                            from += step;
-                            if (vouchers.length < step) {
+                            if (vouchers && vouchers.length > 0) {
+                                chunkVouchers = chunkVouchers.concat(vouchers);
+                                from += step;
+                                if (vouchers.length < step) {
+                                    more = false;
+                                }
+                            } else {
                                 more = false;
                             }
-                        } else {
-                            more = false;
                         }
-                    }
+                        return chunkVouchers;
+                    })();
+
+                    chunkPromises.push(chunkFetchPromise);
                 }
+
+                // המתנה לכל הבקשות שיסתיימו (במקביל!)
+                const results = await Promise.all(chunkPromises);
+                
+                // איחוד כל התוצאות למערך אחד שטוח
+                allVouchers = results.flat();
             }
 
             this.data.institutions = [];
 
             // שלב 3: איחוד הנתונים בזיכרון
             for (const inst of institutions) {
-
+                
                 // מיון קבוצות
-                const sortedGroups = (inst.groups || []).sort((a, b) =>
+                const sortedGroups = (inst.groups || []).sort((a, b) => 
                     new Date(a.created_at) - new Date(b.created_at)
                 );
 
@@ -121,7 +135,7 @@ class DataManager {
                     const groupVouchers = allVouchers.filter(v => v.group_id === group.id);
 
                     // מיון תלושים
-                    const sortedVouchers = groupVouchers.sort((a, b) =>
+                    const sortedVouchers = groupVouchers.sort((a, b) => 
                         new Date(b.created_at) - new Date(a.created_at)
                     );
 
@@ -164,45 +178,48 @@ class DataManager {
     }
 
     /**
-     * מיגרציה מ-LocalStorage ל-Supabase
+     * מיגרציה מ-localStorage ל-Supabase
      */
     async migrateFromLocalStorage() {
         try {
-            const stored = localStorage.getItem('voucherSystemData');
-            if (!stored) return;
+            const localDataStr = localStorage.getItem('voucherApp_data');
+            if (!localDataStr) return;
 
-            const localData = JSON.parse(stored);
+            const localData = JSON.parse(localDataStr);
             if (!localData.institutions || localData.institutions.length === 0) return;
 
-            console.log('Migrating data from LocalStorage:', localData);
-            Utils.showToast('מבצע מיגרציה של נתונים לענן...', 'info');
+            console.log('Starting migration...');
+            Utils.showToast('מתחיל מיגרציה לענן...', 'info');
 
             for (const inst of localData.institutions) {
                 // יצירת מוסד
-                const { error: instError } = await window.supabaseClient
+                const { data: newInst, error: instError } = await window.supabaseClient
                     .from('institutions')
-                    .insert([{ id: inst.id, name: inst.name }]);
+                    .insert({ name: inst.name, created_at: inst.createdAt })
+                    .select()
+                    .single();
 
                 if (instError) throw instError;
 
                 for (const group of inst.groups) {
                     // יצירת קבוצה
-                    const { error: groupError } = await window.supabaseClient
+                    const { data: newGroup, error: groupError } = await window.supabaseClient
                         .from('groups')
-                        .insert([{
-                            id: group.id,
-                            institution_id: inst.id,
+                        .insert({
+                            institution_id: newInst.id,
                             name: group.name,
                             institution_subsidy_percent: group.institutionSubsidyPercent,
-                            admin_subsidy_percent: group.adminSubsidyPercent
-                        }]);
+                            admin_subsidy_percent: group.adminSubsidyPercent,
+                            created_at: group.createdAt
+                        })
+                        .select()
+                        .single();
 
                     if (groupError) throw groupError;
 
-                    // הכנת תלושים
+                    // יצירת תלושים ב-Batch
                     const vouchersToInsert = group.vouchers.map(v => ({
-                        id: v.id,
-                        group_id: group.id,
+                        group_id: newGroup.id,
                         owner_name: v.ownerName,
                         barcode: v.barcode,
                         face_value: v.faceValue,
@@ -211,299 +228,122 @@ class DataManager {
                         created_at: v.createdAt
                     }));
 
-                    if (vouchersToInsert.length > 0) {
+                    // מטפלים ב-Batch של 100 כדי לא להעמיס
+                    const batchSize = 100;
+                    for (let i = 0; i < vouchersToInsert.length; i += batchSize) {
+                        const batch = vouchersToInsert.slice(i, i + batchSize);
                         const { error: voucherError } = await window.supabaseClient
                             .from('vouchers')
-                            .insert(vouchersToInsert);
-
+                            .insert(batch);
+                        
                         if (voucherError) throw voucherError;
                     }
                 }
             }
 
-            Utils.showToast('המיגרציה הושלמה בהצלחה!');
-            console.log('Migration completed');
+            console.log('Migration completed successfully');
+            Utils.showToast('הנתונים הועברו לענן בהצלחה!', 'success');
+            
+            // אפשר למחוק את הלוקאל אחרי שבדקנו שהכל עובד
+            // localStorage.removeItem('voucherApp_data');
 
         } catch (error) {
             console.error('Migration failed:', error);
-            Utils.showToast('שגיאה במיגרציה נתונים', 'error');
+            Utils.showToast('שגיאה במיגרציה', 'error');
         }
     }
-
-    // ==================== מוסדות (Async) ====================
 
     /**
      * הוספת מוסד חדש
      */
     async addInstitution(name) {
-        const id = Utils.generateId();
         try {
-            const { error } = await window.supabaseClient
+            const { data, error } = await window.supabaseClient
                 .from('institutions')
-                .insert([{ id, name }]);
+                .insert({ name: name })
+                .select()
+                .single();
 
             if (error) throw error;
-
-            const institution = {
-                id,
-                name: name,
-                createdAt: new Date().toISOString(),
-                groups: []
-            };
-            this.data.institutions.push(institution);
-            return institution;
+            
+            // רענון נתונים מלא
+            await this.init();
+            return data;
         } catch (error) {
             console.error('Error adding institution:', error);
-            Utils.showToast('שגיאה בשמירת מוסד', 'error');
-            throw error;
-        }
-    }
-
-    // ==================== סטטיסטיקות גלובליות ====================
-
-    /**
-     * קבלת סטטיסטיקות כלליות לדשבורד
-     */
-    getGlobalStats() {
-        let totalFaceValue = 0;
-        let totalInstitutionDebt = 0;
-        let totalAdminSubsidy = 0;
-
-        for (const institution of this.data.institutions) {
-            const instStats = this.getInstitutionStats(institution.id);
-            totalFaceValue += instStats.totalFaceValue;
-            totalInstitutionDebt += instStats.totalDebt;
-            totalAdminSubsidy += instStats.totalAdminSubsidy;
-        }
-
-        return {
-            totalFaceValue,
-            totalInstitutionDebt,
-            totalAdminSubsidy
-        };
-    }
-
-    // ==================== מוסדות ====================
-
-    /**
-     * קבלת כל המוסדות
-     */
-    getAllInstitutions() {
-        return this.data.institutions;
-    }
-
-    /**
-     * קבלת מוסד לפי ID
-     */
-    getInstitution(id) {
-        return this.data.institutions.find(inst => inst.id === id);
-    }
-
-    // addInstitution כבר קיים למעלה (אסינכרוני)
-
-    /**
-     * עריכת מוסד
-     */
-    async updateInstitution(id, updates) {
-        try {
-            const { error } = await window.supabaseClient
-                .from('institutions')
-                .update(updates)
-                .eq('id', id);
-
-            if (error) throw error;
-
-            const institution = this.getInstitution(id);
-            if (institution) {
-                Object.assign(institution, updates);
-            }
-            return institution;
-        } catch (error) {
-            console.error('Error updating institution:', error);
-            Utils.showToast('שגיאה בעדכון מוסד', 'error');
+            Utils.showToast('שגיאה בהוספת מוסד', 'error');
             throw error;
         }
     }
 
     /**
-     * מחיקת מוסד (כולל כל הקבוצות והתלושים)
+     * הוספת קבוצה למוסד
      */
-    async deleteInstitution(id) {
+    async addGroup(institutionId, groupData) {
         try {
-            const { error } = await window.supabaseClient
-                .from('institutions')
-                .delete()
-                .eq('id', id);
-
-            if (error) throw error;
-
-            const index = this.data.institutions.findIndex(inst => inst.id === id);
-            if (index !== -1) {
-                this.data.institutions.splice(index, 1);
-                return true;
-            }
-            return false;
-        } catch (error) {
-            console.error('Error deleting institution:', error);
-            Utils.showToast('שגיאה במחיקת מוסד', 'error');
-            throw error;
-        }
-    }
-
-    /**
-     * קבלת סטטיסטיקות של מוסד
-     */
-    getInstitutionStats(institutionId) {
-        const institution = this.getInstitution(institutionId);
-        if (!institution) return null;
-
-        let totalFaceValue = 0;
-        let totalDebt = 0;
-        let totalAdminSubsidy = 0;
-        let totalVouchers = 0;
-        const subsidyRanges = { institution: [], admin: [] };
-
-        for (const group of institution.groups) {
-            subsidyRanges.institution.push(group.institutionSubsidyPercent);
-            subsidyRanges.admin.push(group.adminSubsidyPercent);
-
-            for (const voucher of group.vouchers) {
-                totalFaceValue += voucher.faceValue;
-                totalDebt += Utils.calculateInstitutionDebt(voucher.paidAmount, group.institutionSubsidyPercent);
-                totalAdminSubsidy += Utils.calculateAdminSubsidy(voucher.paidAmount, group.adminSubsidyPercent);
-                totalVouchers++;
-            }
-        }
-
-        return {
-            totalFaceValue,
-            totalDebt,
-            totalAdminSubsidy,
-            totalVouchers,
-            institutionSubsidyRange: Utils.formatPercentRange(subsidyRanges.institution),
-            adminSubsidyRange: Utils.formatPercentRange(subsidyRanges.admin)
-        };
-    }
-
-    // ==================== קבוצות ====================
-
-    /**
-     * קבלת קבוצה לפי ID
-     */
-    getGroup(institutionId, groupId) {
-        const institution = this.getInstitution(institutionId);
-        if (!institution) return null;
-        return institution.groups.find(g => g.id === groupId);
-    }
-
-    /**
-     * הוספת קבוצה חדשה למוסד (Async)
-     */
-    async addGroup(institutionId, name, institutionSubsidyPercent, adminSubsidyPercent) {
-        const institution = this.getInstitution(institutionId);
-        if (!institution) return null;
-
-        const id = Utils.generateId();
-        const group = {
-            id,
-            institution_id: institutionId,
-            name: name,
-            institution_subsidy_percent: Number(institutionSubsidyPercent),
-            admin_subsidy_percent: Number(adminSubsidyPercent)
-        };
-
-        try {
-            const { error } = await window.supabaseClient
+            const { data, error } = await window.supabaseClient
                 .from('groups')
-                .insert([group]);
+                .insert({
+                    institution_id: institutionId,
+                    name: groupData.name,
+                    institution_subsidy_percent: groupData.institutionSubsidyPercent,
+                    admin_subsidy_percent: groupData.adminSubsidyPercent
+                })
+                .select()
+                .single();
 
             if (error) throw error;
 
-            const newGroup = {
-                id: group.id,
-                name: group.name,
-                institutionSubsidyPercent: group.institution_subsidy_percent,
-                adminSubsidyPercent: group.admin_subsidy_percent,
-                createdAt: new Date().toISOString(),
-                vouchers: []
-            };
-
-            institution.groups.push(newGroup);
-            return newGroup;
+            await this.init();
+            return data;
         } catch (error) {
             console.error('Error adding group:', error);
-            Utils.showToast('שגיאה בשמירת קבוצה', 'error');
+            Utils.showToast('שגיאה בהוספת קבוצה', 'error');
             throw error;
         }
     }
 
     /**
-     * עריכת קבוצה (Async)
+     * הוספת תלושים לקבוצה
      */
-    async updateGroup(institutionId, groupId, updates) {
-        // המרה לפורמט של DB במידת הצורך
-        const dbUpdates = {};
-        if (updates.name !== undefined) dbUpdates.name = updates.name;
-        if (updates.institutionSubsidyPercent !== undefined) dbUpdates.institution_subsidy_percent = updates.institutionSubsidyPercent;
-        if (updates.adminSubsidyPercent !== undefined) dbUpdates.admin_subsidy_percent = updates.adminSubsidyPercent;
-
-        if (Object.keys(dbUpdates).length === 0) return this.getGroup(institutionId, groupId);
-
+    async addVouchers(groupId, vouchers) {
         try {
-            const { error } = await window.supabaseClient
-                .from('groups')
-                .update(dbUpdates)
-                .eq('id', groupId);
+            // המרה לפורמט של המסד
+            const vouchersToInsert = vouchers.map(v => ({
+                group_id: groupId,
+                owner_name: v.ownerName,
+                barcode: v.barcode,
+                face_value: v.faceValue,
+                paid_amount: v.paidAmount,
+                has_warning: v.hasWarning,
+                created_at: v.createdAt || new Date().toISOString()
+            }));
 
-            if (error) throw error;
-
-            const group = this.getGroup(institutionId, groupId);
-            if (group) {
-                Object.assign(group, updates);
+            // שליחה בבת אחת (Supabase תומך ב-Batch insert)
+            // אם הכמות גדולה מ-1000, כדאי לפצל, אבל ברוב המקרים זה בסדר
+            const batchSize = 1000;
+            for (let i = 0; i < vouchersToInsert.length; i += batchSize) {
+                const batch = vouchersToInsert.slice(i, i + batchSize);
+                const { error } = await window.supabaseClient
+                    .from('vouchers')
+                    .insert(batch);
+                
+                if (error) throw error;
             }
-            return group;
+
+            await this.init();
+            return true;
         } catch (error) {
-            console.error('Error updating group:', error);
-            Utils.showToast('שגיאה בעדכון קבוצה', 'error');
+            console.error('Error adding vouchers:', error);
+            Utils.showToast('שגיאה בהוספת תלושים', 'error');
             throw error;
         }
     }
 
     /**
-     * מחיקת קבוצה (Async)
+     * מחיקת תלושים של קבוצה
      */
-    async deleteGroup(institutionId, groupId) {
-        const institution = this.getInstitution(institutionId);
-        if (!institution) return false;
-
-        try {
-            const { error } = await window.supabaseClient
-                .from('groups')
-                .delete()
-                .eq('id', groupId);
-
-            if (error) throw error;
-
-            const index = institution.groups.findIndex(g => g.id === groupId);
-            if (index !== -1) {
-                institution.groups.splice(index, 1);
-                return true;
-            }
-            return false;
-        } catch (error) {
-            console.error('Error deleting group:', error);
-            Utils.showToast('שגיאה במחיקת קבוצה', 'error');
-            throw error;
-        }
-    }
-
-    /**
-     * מחיקת כל התלושים מקבוצה (Async)
-     */
-    async deleteAllVouchersFromGroup(institutionId, groupId) {
-        const group = this.getGroup(institutionId, groupId);
-        if (!group) return false;
-
+    async deleteGroupVouchers(groupId) {
         try {
             const { error } = await window.supabaseClient
                 .from('vouchers')
@@ -512,399 +352,31 @@ class DataManager {
 
             if (error) throw error;
 
-            group.vouchers = [];
+            // עדכון מקומי מהיר במקום טעינה מלאה
+            await this.init();
             return true;
         } catch (error) {
-            console.error('Error deleting all vouchers:', error);
+            console.error('Error deleting vouchers:', error);
             Utils.showToast('שגיאה במחיקת תלושים', 'error');
             throw error;
         }
     }
 
-    /**
-     * קבלת סטטיסטיקות של קבוצה
-     */
-    getGroupStats(institutionId, groupId) {
-        const group = this.getGroup(institutionId, groupId);
-        if (!group) return null;
+    // --- Getters ---
 
-        let totalFaceValue = 0;
-        let totalPaid = 0;
-        let totalDebt = 0;
-        let totalAdminSubsidy = 0;
-
-        for (const voucher of group.vouchers) {
-            totalFaceValue += voucher.faceValue;
-            totalPaid += voucher.paidAmount;
-            totalDebt += Utils.calculateInstitutionDebt(voucher.paidAmount, group.institutionSubsidyPercent);
-            totalAdminSubsidy += Utils.calculateAdminSubsidy(voucher.paidAmount, group.adminSubsidyPercent);
-        }
-
-        return {
-            totalFaceValue,
-            totalPaid,
-            totalDebt,
-            totalAdminSubsidy,
-            voucherCount: group.vouchers.length,
-            totalDiscountPercent: group.institutionSubsidyPercent + group.adminSubsidyPercent
-        };
+    getInstitutions() {
+        return this.data.institutions;
     }
 
-    // ==================== תלושים ====================
-
-    /**
-     * הוספת תלושים מקובץ Excel
-     * @param {string} institutionId - ID המוסד
-     * @param {string} groupId - ID הקבוצה
-     * @param {Array} data - נתונים מהאקסל [{name, amount}, ...]
-     * @param {Object} distribution - חלוקת אחוזים {50: 20, 100: 30, 200: 50}
-     */
-    /**
-     * הוספת תלושים מקובץ Excel (Async Batch Insert)
-     * @param {string} institutionId - ID המוסד
-     * @param {string} groupId - ID הקבוצה
-     * @param {Array} data - נתונים מהאקסל [{name, amount}, ...]
-     * @param {Object} distribution - חלוקת אחוזים {50: 20, 100: 30, 200: 50}
-     */
-    async addVouchersFromExcel(institutionId, groupId, data, distribution) {
-        const group = this.getGroup(institutionId, groupId);
-        if (!group) return { success: false, error: 'קבוצה לא נמצאה' };
-
-        const results = {
-            success: true,
-            created: 0,
-            warnings: []
-        };
-        const vouchersToInsert = [];
-        const localVouchers = [];
-
-        console.log('=== יצירת תלושים (Supabase) ===');
-
-        for (const row of data) {
-            const paidAmount = Number(row.amount);
-            if (isNaN(paidAmount) || paidAmount <= 0) {
-                results.warnings.push(`${row.name}: סכום לא תקין`);
-                continue;
-            }
-
-            // חישוב ערך נקוב כולל
-            const faceValue = Utils.calculateFaceValue(
-                paidAmount,
-                group.institutionSubsidyPercent,
-                group.adminSubsidyPercent
-            );
-
-            // חלוקת תלושים
-            const dist = Utils.distributeVouchers(faceValue, distribution);
-
-            // יצירת תלושים לכל סוג
-            const denominations = [200, 100, 50]; // סדר יצירה
-            for (const denom of denominations) {
-                const count = dist.vouchers[denom]?.count || 0;
-                for (let i = 0; i < count; i++) {
-                    const voucherPaidAmount = dist.totalAllocated > 0
-                        ? (paidAmount * denom) / dist.totalAllocated
-                        : 0;
-
-                    const id = Utils.generateId();
-                    const barcode = Utils.generateBarcode();
-                    const createdAt = new Date().toISOString();
-
-                    // אובייקט ל-DB (Snake Case)
-                    let ownerNameDB = row.name;
-                    // אם זה התלוש הראשון ויש אזהרה, נצמיד את סכום האזהרה לשם (פתרון זמני ללא שינוי סכמה)
-                    if (i === 0 && denom === denominations.find(d => dist.vouchers[d].count > 0) && dist.hasWarning && dist.remainder > 0) {
-                        // בדיקה שזו האיטרציה הראשונה באמת שיצרנו תלוש עבורה
-                    }
-
-                    // לוגיקה פשוטה יותר: נסמן את התלוש הראשון שנוצר עבור האדם הזה
-                    const isFirstVoucherForPerson = vouchersToInsert.filter(v => v.owner_name.startsWith(row.name)).length === 0;
-
-                    if (isFirstVoucherForPerson && dist.hasWarning && dist.remainder > 0) {
-                        ownerNameDB = `${row.name} {warning:${dist.remainder}}`;
-                    }
-
-                    vouchersToInsert.push({
-                        id: id,
-                        group_id: groupId,
-                        owner_name: ownerNameDB,
-                        barcode: barcode,
-                        face_value: denom,
-                        paid_amount: voucherPaidAmount,
-                        has_warning: dist.hasWarning,
-                        // created_at נוצר אוטומטית אבל נשלח כדי לסנכרן
-                    });
-
-                    // אובייקט ל-Local State (Camel Case)
-                    localVouchers.push({
-                        id: id,
-                        ownerName: ownerNameDB,
-                        barcode: barcode,
-                        faceValue: denom,
-                        paidAmount: voucherPaidAmount,
-                        hasWarning: dist.hasWarning,
-                        createdAt: createdAt
-                    });
-                    results.created++;
-                }
-            }
-
-            if (dist.hasWarning) {
-                results.warnings.push(`${row.name}: נותר סכום של ${Utils.formatCurrency(dist.remainder)} שלא חולק`);
-            }
-        }
-
-        if (vouchersToInsert.length === 0) {
-            return results;
-        }
-
-        try {
-            // Batch Insert ל-Supabase
-            const { error } = await window.supabaseClient
-                .from('vouchers')
-                .insert(vouchersToInsert);
-
-            if (error) throw error;
-
-            console.log(`Saved ${vouchersToInsert.length} vouchers to Cloud`);
-
-            // עדכון ה-State המקומי
-            group.vouchers.push(...localVouchers);
-            return results;
-        } catch (error) {
-            console.error('Error saving vouchers to Supabase:', error);
-            Utils.showToast('שגיאה בשמירת התלושים בענן', 'error');
-            return { success: false, error: error.message, created: 0, warnings: results.warnings };
-        }
+    getInstitution(id) {
+        return this.data.institutions.find(i => i.id === id);
     }
 
-    /**
-     * מחיקת תלוש בודד (Async)
-     */
-    async deleteVoucher(institutionId, groupId, voucherId) {
-        const group = this.getGroup(institutionId, groupId);
-        if (!group) return false;
-
-        try {
-            const { error } = await window.supabaseClient
-                .from('vouchers')
-                .delete()
-                .eq('id', voucherId);
-
-            if (error) throw error;
-
-            const index = group.vouchers.findIndex(v => v.id === voucherId);
-            if (index !== -1) {
-                group.vouchers.splice(index, 1);
-                return true;
-            }
-            return false;
-        } catch (error) {
-            console.error('Error deleting voucher:', error);
-            Utils.showToast('שגיאה במחיקת תלוש', 'error');
-            throw error;
+    getGroup(institutionId, groupId) {
+        const inst = this.getInstitution(institutionId);
+        if (inst) {
+            return inst.groups.find(g => g.id === groupId);
         }
-    }
-
-    /**
-     * קבלת תלוש לפי ID
-     */
-    getVoucher(institutionId, groupId, voucherId) {
-        const group = this.getGroup(institutionId, groupId);
-        if (!group) return null;
-        return group.vouchers.find(v => v.id === voucherId);
-    }
-
-    // ==================== חיפוש ====================
-
-    /**
-     * חיפוש גלובלי במוסדות, קבוצות ואנשים
-     */
-    search(query) {
-        const results = [];
-        const lowerQuery = query.toLowerCase();
-
-        for (const institution of this.data.institutions) {
-            // חיפוש במוסדות
-            if (institution.name.toLowerCase().includes(lowerQuery)) {
-                results.push({
-                    type: 'institution',
-                    typeLabel: 'מוסד',
-                    id: institution.id,
-                    name: institution.name,
-                    path: { institutionId: institution.id }
-                });
-            }
-
-            for (const group of institution.groups) {
-                // חיפוש בקבוצות
-                if (group.name.toLowerCase().includes(lowerQuery)) {
-                    results.push({
-                        type: 'group',
-                        typeLabel: 'קבוצה',
-                        id: group.id,
-                        name: group.name,
-                        subtitle: institution.name,
-                        path: { institutionId: institution.id, groupId: group.id }
-                    });
-                }
-
-                // חיפוש באנשים (בעלי תלושים)
-                const owners = new Set();
-                for (const voucher of group.vouchers) {
-                    if (voucher.ownerName.toLowerCase().includes(lowerQuery) && !owners.has(voucher.ownerName)) {
-                        owners.add(voucher.ownerName);
-                        results.push({
-                            type: 'person',
-                            typeLabel: 'אדם',
-                            id: voucher.id,
-                            name: voucher.ownerName,
-                            subtitle: `${group.name} - ${institution.name}`,
-                            path: { institutionId: institution.id, groupId: group.id }
-                        });
-                    }
-                }
-            }
-        }
-
-        return results;
-    }
-
-    // ==================== ייצוא ====================
-
-    /**
-     * ייצוא כל הנתונים לפורמט טקסט
-     */
-    exportAllData() {
-        const stats = this.getGlobalStats();
-        let content = '';
-
-        content += '='.repeat(50) + '\n';
-        content += 'מערכת ניהול שוברים - דוח מלא\n';
-        content += `תאריך הפקה: ${Utils.formatDate(new Date())}\n`;
-        content += '='.repeat(50) + '\n\n';
-
-        content += '--- סיכום כללי ---\n';
-        content += `שווי שוק כולל: ${Utils.formatCurrency(stats.totalFaceValue)}\n`;
-        content += `סך חוב מוסדות: ${Utils.formatCurrency(stats.totalInstitutionDebt)}\n`;
-        content += `סך סבסוד שלנו: ${Utils.formatCurrency(stats.totalAdminSubsidy)}\n\n`;
-
-        for (const institution of this.data.institutions) {
-            const instStats = this.getInstitutionStats(institution.id);
-            content += '-'.repeat(40) + '\n';
-            content += `מוסד: ${institution.name}\n`;
-            content += `שווי תלושים: ${Utils.formatCurrency(instStats.totalFaceValue)}\n`;
-            content += `חוב: ${Utils.formatCurrency(instStats.totalDebt)}\n`;
-            content += `סבסוד שלנו: ${Utils.formatCurrency(instStats.totalAdminSubsidy)}\n`;
-
-            for (const group of institution.groups) {
-                const groupStats = this.getGroupStats(institution.id, group.id);
-                content += `\n  קבוצה: ${group.name}\n`;
-                content += `  סבסוד מוסד: ${group.institutionSubsidyPercent}%\n`;
-                content += `  סבסוד מנהל: ${group.adminSubsidyPercent}%\n`;
-                content += `  תלושים: ${groupStats.voucherCount}\n`;
-                content += `  שווי: ${Utils.formatCurrency(groupStats.totalFaceValue)}\n`;
-
-                for (const voucher of group.vouchers) {
-                    content += `    - ${voucher.ownerName}: ${Utils.formatCurrency(voucher.faceValue)} [${voucher.barcode}]\n`;
-                }
-            }
-            content += '\n';
-        }
-
-        return content;
-    }
-
-    /**
-     * ייצוא כל התלושים לפורמט Excel (CSV)
-     */
-    exportAllToExcel() {
-        const rows = [];
-
-        // כותרות
-        rows.push(['מוסד', 'קבוצה', 'סבסוד מוסד %', 'סבסוד מנהל %', 'שם בעלים', 'ערך נקוב', 'סכום ששולם', 'ברקוד', 'תאריך יצירה']);
-
-        for (const institution of this.data.institutions) {
-            for (const group of institution.groups) {
-                for (const voucher of group.vouchers) {
-                    rows.push([
-                        institution.name,
-                        group.name,
-                        group.institutionSubsidyPercent,
-                        group.adminSubsidyPercent,
-                        voucher.ownerName,
-                        voucher.faceValue,
-                        Math.round(voucher.paidAmount * 100) / 100,
-                        voucher.barcode,
-                        Utils.formatDate(voucher.createdAt)
-                    ]);
-                }
-            }
-        }
-
-        return rows;
-    }
-
-    /**
-     * ייצוא נתוני מוסד ספציפי
-     */
-    exportInstitutionData(institutionId) {
-        const institution = this.getInstitution(institutionId);
-        if (!institution) return '';
-
-        const stats = this.getInstitutionStats(institutionId);
-        let content = '';
-
-        content += `מוסד: ${institution.name}\n`;
-        content += `תאריך: ${Utils.formatDate(new Date())}\n`;
-        content += '-'.repeat(30) + '\n';
-        content += `שווי תלושים: ${Utils.formatCurrency(stats.totalFaceValue)}\n`;
-        content += `חוב: ${Utils.formatCurrency(stats.totalDebt)}\n`;
-        content += `סבסוד שלנו: ${Utils.formatCurrency(stats.totalAdminSubsidy)}\n\n`;
-
-        for (const group of institution.groups) {
-            const groupStats = this.getGroupStats(institutionId, group.id);
-            content += `קבוצה: ${group.name}\n`;
-            content += `תלושים: ${groupStats.voucherCount} | שווי: ${Utils.formatCurrency(groupStats.totalFaceValue)}\n`;
-
-            for (const voucher of group.vouchers) {
-                content += `  - ${voucher.ownerName}: ${Utils.formatCurrency(voucher.faceValue)} [${voucher.barcode}]\n`;
-            }
-            content += '\n';
-        }
-
-        return content;
-    }
-
-    /**
-     * ייצוא נתוני קבוצה ספציפית
-     */
-    exportGroupData(institutionId, groupId) {
-        const institution = this.getInstitution(institutionId);
-        const group = this.getGroup(institutionId, groupId);
-        if (!institution || !group) return '';
-
-        const stats = this.getGroupStats(institutionId, groupId);
-        let content = '';
-
-        content += `מוסד: ${institution.name}\n`;
-        content += `קבוצה: ${group.name}\n`;
-        content += `תאריך: ${Utils.formatDate(new Date())}\n`;
-        content += '-'.repeat(30) + '\n';
-        content += `סבסוד מוסד: ${group.institutionSubsidyPercent}%\n`;
-        content += `סבסוד מנהל: ${group.adminSubsidyPercent}%\n`;
-        content += `סה"כ הנחה: ${stats.totalDiscountPercent}%\n\n`;
-        content += `תלושים: ${stats.voucherCount}\n`;
-        content += `שווי כולל: ${Utils.formatCurrency(stats.totalFaceValue)}\n\n`;
-
-        content += 'רשימת תלושים:\n';
-        for (const voucher of group.vouchers) {
-            content += `${voucher.ownerName} | ${Utils.formatCurrency(voucher.faceValue)} | ${voucher.barcode}\n`;
-        }
-
-        return content;
+        return null;
     }
 }
-
-// יצירת instance גלובלי
-window.dataManager = new DataManager();
