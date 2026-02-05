@@ -47,121 +47,31 @@ class DataManager {
      */
     async init() {
         try {
-            console.log('Loading data from Supabase...');
+            console.log('Loading data via RPC (Server-Side)...');
 
-            // שלב 1: טעינת מבנה (מוסדות וקבוצות)
-            const { data: institutions, error: instError } = await window.supabaseClient
-                .from('institutions')
-                .select(`
-                    *,
-                    groups (*)
-                `)
-                .order('created_at', { ascending: true });
+            // קריאה לפונקציית שרת אחת שמביאה הכל מוכן
+            const { data, error } = await window.supabaseClient.rpc('get_dashboard_data');
 
-            if (instError) throw instError;
+            if (error) throw error;
 
-            if (!institutions || institutions.length === 0) {
+            if (!data || data.length === 0) {
                 console.log('Cloud is empty. Checking for migration...');
                 await this.migrateFromLocalStorage();
                 return this.init();
             }
 
-            // שלב 2: טעינת כל התלושים במכה אחת (עם הגדלת המגבלה ל-10,000)
-            // אנו אוספים את כל ה-ID של הקבוצות כדי להביא רק את התלושים הרלוונטיים (למרות שכרגע זה הכל)
-            const allGroupIds = institutions.flatMap(i => (i.groups || []).map(g => g.id));
-
-            let allVouchers = [];
-            if (allGroupIds.length > 0) {
-                console.log(`[DataManager] Total groups to fetch: ${allGroupIds.length}`);
-                // פיצול רשימת הקבוצות למנות קטנות כדי למנוע שגיאת URI Too Long
-                const chunkSize = 20; // 20 קבוצות בכל בקשה
-                // מגבלת מקביליות כדי לא לחנוק את הדפדפן/שרת (Rate Limiting)
-                const maxConcurrency = 3;
-                const allChunks = [];
-
-                // הכנת רשימת המנות לביצוע
-                for (let i = 0; i < allGroupIds.length; i += chunkSize) {
-                    allChunks.push(allGroupIds.slice(i, i + chunkSize));
-                }
-
-                console.log(`[DataManager] Created ${allChunks.length} chunks of groups.`);
-
-                // ביצוע במקביל אבל במנות (Waves)
-                const results = [];
-                for (let i = 0; i < allChunks.length; i += maxConcurrency) {
-                    console.log(`[DataManager] Processing wave starting at chunk index ${i} / ${allChunks.length}...`);
-                    const activeBatch = allChunks.slice(i, i + maxConcurrency);
-
-                    const batchPromises = activeBatch.map(async (groupIdsChunk, idx) => {
-                        try {
-                            // console.log(`[DataManager] Starting fetch for sub-chunk ${i+idx}...`);
-                            let chunkVouchers = [];
-                            let from = 0;
-                            const step = 1000;
-                            let more = true;
-
-                            while (more) {
-                                const to = from + step - 1;
-                                const { data: vouchers, error: voucherError } = await window.supabaseClient
-                                    .from('vouchers')
-                                    .select('*')
-                                    .in('group_id', groupIdsChunk)
-                                    .range(from, to)
-                                    .order('created_at', { ascending: false });
-
-                                if (voucherError) {
-                                    console.error(`[DataManager] Error in fetch loop (chunk ${i + idx}):`, voucherError);
-                                    throw voucherError;
-                                }
-
-                                if (vouchers && vouchers.length > 0) {
-                                    chunkVouchers = chunkVouchers.concat(vouchers);
-                                    from += step;
-                                    if (vouchers.length < step) {
-                                        more = false;
-                                    }
-                                } else {
-                                    more = false;
-                                }
-                            }
-                            // console.log(`[DataManager] Finished fetch for sub-chunk ${i+idx}, items: ${chunkVouchers.length}`);
-                            return chunkVouchers;
-                        } catch (err) {
-                            console.error(`[DataManager] Critical error fetching sub-chunk ${i + idx}:`, err);
-                            return []; // מחזירים ריק כדי לא להכשיל את כל הנגלה
-                        }
-                    });
-
-                    // מחכים שרק הנגלה הזאת תסתיים לפני שעוברים לנגלה הבאה
-                    const batchResults = await Promise.all(batchPromises);
-                    results.push(...batchResults);
-                }
-
-                allVouchers = results.flat();
-                console.log(`[DataManager] Finished fetching all vouchers. Total: ${allVouchers.length}`);
-            }
-
-            this.data.institutions = [];
-
-            // שלב 3: איחוד הנתונים בזיכרון
-            for (const inst of institutions) {
-
-                // מיון קבוצות
-                const sortedGroups = (inst.groups || []).sort((a, b) =>
-                    new Date(a.created_at) - new Date(b.created_at)
-                );
-
-                const groupsWithVouchers = sortedGroups.map(group => {
-                    // סינון התלושים ששייכים לקבוצה הזו מתוך המאגר הגדול
-                    const groupVouchers = allVouchers.filter(v => v.group_id === group.id);
-
-                    // מיון תלושים
-                    const sortedVouchers = groupVouchers.sort((a, b) =>
-                        new Date(b.created_at) - new Date(a.created_at)
-                    );
-
-                    // מיפוי נתונים
-                    const mappedVouchers = sortedVouchers.map(v => ({
+            // מיפוי הנתונים למבנה הפנימי של האפליקציה (Snake Case -> Camel Case)
+            this.data.institutions = data.map(inst => ({
+                id: inst.id,
+                name: inst.name,
+                createdAt: inst.created_at,
+                groups: (inst.groups || []).map(group => ({
+                    id: group.id,
+                    name: group.name,
+                    institutionSubsidyPercent: Number(group.institution_subsidy_percent),
+                    adminSubsidyPercent: Number(group.admin_subsidy_percent),
+                    createdAt: group.created_at,
+                    vouchers: (group.vouchers || []).map(v => ({
                         id: v.id,
                         ownerName: v.owner_name,
                         barcode: v.barcode,
@@ -169,30 +79,20 @@ class DataManager {
                         paidAmount: Number(v.paid_amount),
                         hasWarning: v.has_warning,
                         createdAt: v.created_at
-                    }));
+                    }))
+                }))
+            }));
 
-                    return {
-                        id: group.id,
-                        name: group.name,
-                        institutionSubsidyPercent: Number(group.institution_subsidy_percent),
-                        adminSubsidyPercent: Number(group.admin_subsidy_percent),
-                        createdAt: group.created_at,
-                        vouchers: mappedVouchers
-                    };
-                });
+            // חישוב כמות תלושים כוללת ללוג
+            const totalVouchers = this.data.institutions.reduce((sum, inst) =>
+                sum + inst.groups.reduce((gSum, g) => gSum + g.vouchers.length, 0), 0
+            );
 
-                this.data.institutions.push({
-                    id: inst.id,
-                    name: inst.name,
-                    createdAt: inst.created_at,
-                    groups: groupsWithVouchers
-                });
-            }
-
-            console.log(`Data loaded successfully: ${institutions.length} institutions, ${allVouchers.length} vouchers`);
+            console.log(`Data loaded successfully via RPC: ${this.data.institutions.length} institutions, ${totalVouchers} vouchers`);
             return true;
+
         } catch (error) {
-            console.error('Error loading data from Supabase:', error);
+            console.error('Error loading data from Supabase (RPC):', error);
             Utils.showToast('שגיאה בטעינת נתונים מהענן', 'error');
             return false;
         }
