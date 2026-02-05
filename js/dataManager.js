@@ -72,10 +72,11 @@ class DataManager {
 
             let allVouchers = [];
             if (allGroupIds.length > 0) {
+                console.log(`[DataManager] Total groups to fetch: ${allGroupIds.length}`);
                 // פיצול רשימת הקבוצות למנות קטנות כדי למנוע שגיאת URI Too Long
                 const chunkSize = 20; // 20 קבוצות בכל בקשה
                 // מגבלת מקביליות כדי לא לחנוק את הדפדפן/שרת (Rate Limiting)
-                const maxConcurrency = 5;
+                const maxConcurrency = 3;
                 const allChunks = [];
 
                 // הכנת רשימת המנות לביצוע
@@ -83,39 +84,52 @@ class DataManager {
                     allChunks.push(allGroupIds.slice(i, i + chunkSize));
                 }
 
+                console.log(`[DataManager] Created ${allChunks.length} chunks of groups.`);
+
                 // ביצוע במקביל אבל במנות (Waves)
                 const results = [];
                 for (let i = 0; i < allChunks.length; i += maxConcurrency) {
+                    console.log(`[DataManager] Processing wave starting at chunk index ${i} / ${allChunks.length}...`);
                     const activeBatch = allChunks.slice(i, i + maxConcurrency);
 
-                    const batchPromises = activeBatch.map(async (groupIdsChunk) => {
-                        let chunkVouchers = [];
-                        let from = 0;
-                        const step = 1000;
-                        let more = true;
+                    const batchPromises = activeBatch.map(async (groupIdsChunk, idx) => {
+                        try {
+                            // console.log(`[DataManager] Starting fetch for sub-chunk ${i+idx}...`);
+                            let chunkVouchers = [];
+                            let from = 0;
+                            const step = 1000;
+                            let more = true;
 
-                        while (more) {
-                            const to = from + step - 1;
-                            const { data: vouchers, error: voucherError } = await window.supabaseClient
-                                .from('vouchers')
-                                .select('*')
-                                .in('group_id', groupIdsChunk)
-                                .range(from, to)
-                                .order('created_at', { ascending: false });
+                            while (more) {
+                                const to = from + step - 1;
+                                const { data: vouchers, error: voucherError } = await window.supabaseClient
+                                    .from('vouchers')
+                                    .select('*')
+                                    .in('group_id', groupIdsChunk)
+                                    .range(from, to)
+                                    .order('created_at', { ascending: false });
 
-                            if (voucherError) throw voucherError;
+                                if (voucherError) {
+                                    console.error(`[DataManager] Error in fetch loop (chunk ${i + idx}):`, voucherError);
+                                    throw voucherError;
+                                }
 
-                            if (vouchers && vouchers.length > 0) {
-                                chunkVouchers = chunkVouchers.concat(vouchers);
-                                from += step;
-                                if (vouchers.length < step) {
+                                if (vouchers && vouchers.length > 0) {
+                                    chunkVouchers = chunkVouchers.concat(vouchers);
+                                    from += step;
+                                    if (vouchers.length < step) {
+                                        more = false;
+                                    }
+                                } else {
                                     more = false;
                                 }
-                            } else {
-                                more = false;
                             }
+                            // console.log(`[DataManager] Finished fetch for sub-chunk ${i+idx}, items: ${chunkVouchers.length}`);
+                            return chunkVouchers;
+                        } catch (err) {
+                            console.error(`[DataManager] Critical error fetching sub-chunk ${i + idx}:`, err);
+                            return []; // מחזירים ריק כדי לא להכשיל את כל הנגלה
                         }
-                        return chunkVouchers;
                     });
 
                     // מחכים שרק הנגלה הזאת תסתיים לפני שעוברים לנגלה הבאה
@@ -124,6 +138,7 @@ class DataManager {
                 }
 
                 allVouchers = results.flat();
+                console.log(`[DataManager] Finished fetching all vouchers. Total: ${allVouchers.length}`);
             }
 
             this.data.institutions = [];
