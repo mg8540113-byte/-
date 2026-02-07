@@ -1,6 +1,9 @@
 -- פונקציה לשליפת כל נתוני הדשבורד בקריאה אחת יעילה
 -- יש להריץ את הסקריפט הזה ב-SQL Editor בתוך ממשק הניהול של Supabase
 
+-- בדיקה אם הפונקציה קיימת והסרתה לצורך עדכון
+drop function if exists get_dashboard_data();
+
 create or replace function get_dashboard_data()
 returns json
 language sql
@@ -45,3 +48,6 @@ as $$
   ), '[]'::json)
   from institutions i;
 $$;
+
+-- הענקת הרשאות חובה כדי שהדפדפן יוכל להפעיל את הפונקציה!
+grant execute on function get_dashboard_data() to anon, authenticated, service_role;

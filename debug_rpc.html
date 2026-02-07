@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>בדיקת חיבור RPC</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; text-align: right; }
+        #status { font-weight: bold; margin-bottom: 20px; }
+        .success { color: green; }
+        .error { color: red; }
+        pre { background: #f0f0f0; padding: 10px; direction: ltr; text-align: left; overflow: auto; max-height: 400px; }
+    </style>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="js/supabaseConfig.js"></script>
+</head>
+<body>
+    <h1>בדיקת תקשורת לשרת (RPC) 🛠️</h1>
+    <div id="status">מתחבר...</div>
+    <div id="output"></div>
+
+    <script>
+        async function testConnection() {
+            const statusDiv = document.getElementById('status');
+            const outputDiv = document.getElementById('output');
+            
+            try {
+                if (!window.supabaseClient) {
+                    throw new Error('Supabase Client not initialized (check supabaseConfig.js)');
+                }
+
+                statusDiv.textContent = 'מנסה למשוך נתונים בפונקציה get_dashboard_data...';
+                const startTime = performance.now();
+                
+                const { data, error } = await window.supabaseClient.rpc('get_dashboard_data');
+                
+                const endTime = performance.now();
+                const duration = (endTime - startTime).toFixed(2);
+
+                if (error) {
+                    console.error('RPC Error:', error);
+                    statusDiv.innerHTML = `<span class="error">❌ שגיאה: ${error.message} (Code: ${error.code})</span>`;
+                    outputDiv.innerHTML = `<pre>${JSON.stringify(error, null, 2)}</pre>`;
+                    return;
+                }
+
+                if (!data) {
+                    statusDiv.innerHTML = `<span class="error">⚠️ התקבלה תשובה ריקה (null) מהשרת.</span>`;
+                    return;
+                }
+
+                const count = data.length;
+                let voucherCount = 0;
+                data.forEach(inst => {
+                    (inst.groups || []).forEach(g => {
+                        voucherCount += (g.vouchers || []).length;
+                    });
+                });
+
+                statusDiv.innerHTML = `<span class="success">✅ הצלחה! הנתונים התקבלו תוך ${duration}ms</span>`;
+                outputDiv.innerHTML = `
+                    <p>נמצאו <strong>${count}</strong> מוסדות.</p>
+                    <p>נמצאו <strong>${voucherCount}</strong> תלושים סה"כ.</p>
+                    <hr>
+                    <h3>דוגמה לנתונים גולמיים (ראשון):</h3>
+                    <pre>${JSON.stringify(data[0], null, 2)}</pre>
+                `;
+
+            } catch (err) {
+                console.error('Test Error:', err);
+                statusDiv.innerHTML = `<span class="error">❌ שגיאה קריטית בדפדפן: ${err.message}</span>`;
+            }
+        }
+
+        // הפעלה
+        setTimeout(testConnection, 500);
+    </script>
+</body>
+</html>
