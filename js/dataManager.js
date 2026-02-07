@@ -47,53 +47,115 @@ class DataManager {
      */
     async init() {
         try {
-            console.log('Loading data via RPC (Server-Side)...');
+            console.log('Loading data: Starting Parallel Global Fetch...');
 
-            // קריאה לפונקציית שרת אחת שמביאה הכל מוכן
-            const { data, error } = await window.supabaseClient.rpc('get_dashboard_data');
+            // אנחנו שולפים את הטבלאות במקביל כדי לחסוך זמן
+            // אין תלות בין הבקשות - השרת יחזיר מה שמותר למשתמש לראות (RLS)
 
-            if (error) throw error;
+            const pInstitutions = window.supabaseClient
+                .from('institutions')
+                .select('*')
+                .order('created_at', { ascending: true });
 
-            if (!data || data.length === 0) {
+            const pGroups = window.supabaseClient
+                .from('groups')
+                .select('*')
+                .order('created_at', { ascending: true });
+
+            // פונקציה פנימית למשיכת *כל* התלושים בפייג'ינג (Pagination)
+            const fetchAllVouchers = async () => {
+                let allVouchers = [];
+                let from = 0;
+                const step = 1000; // המקסימום של Supabase
+                let more = true;
+
+                while (more) {
+                    console.log(`[DataManager] Fetching vouchers range ${from}-${from + step}...`);
+                    const { data, error } = await window.supabaseClient
+                        .from('vouchers')
+                        .select('*')
+                        .range(from, from + step - 1)
+                        .order('created_at', { ascending: false });
+
+                    if (error) throw error;
+
+                    if (data && data.length > 0) {
+                        allVouchers = allVouchers.concat(data);
+                        from += step;
+                        // אם קיבלנו פחות מהמקסימום, סימן שזה הסוף
+                        if (data.length < step) more = false;
+                    } else {
+                        more = false;
+                    }
+                }
+                return allVouchers;
+            };
+
+            // הרצת הבקשות במקביל
+            const [instRes, groupRes, vouchersData] = await Promise.all([
+                pInstitutions,
+                pGroups,
+                fetchAllVouchers()
+            ]);
+
+            if (instRes.error) throw instRes.error;
+            if (groupRes.error) throw groupRes.error;
+
+            const institutions = instRes.data;
+            const groups = groupRes.data;
+            // vouchersData is usually an array, not a response object because of the custom function
+
+            if (!institutions || institutions.length === 0) {
                 console.log('Cloud is empty. Checking for migration...');
                 await this.migrateFromLocalStorage();
-                return this.init();
+                return this.init(); // Retry
             }
 
-            // מיפוי הנתונים למבנה הפנימי של האפליקציה (Snake Case -> Camel Case)
-            this.data.institutions = data.map(inst => ({
-                id: inst.id,
-                name: inst.name,
-                createdAt: inst.created_at,
-                groups: (inst.groups || []).map(group => ({
-                    id: group.id,
-                    name: group.name,
-                    institutionSubsidyPercent: Number(group.institution_subsidy_percent),
-                    adminSubsidyPercent: Number(group.admin_subsidy_percent),
-                    createdAt: group.created_at,
-                    vouchers: (group.vouchers || []).map(v => ({
-                        id: v.id,
-                        ownerName: v.owner_name,
-                        barcode: v.barcode,
-                        faceValue: Number(v.face_value),
-                        paidAmount: Number(v.paid_amount),
-                        hasWarning: v.has_warning,
-                        createdAt: v.created_at
-                    }))
-                }))
-            }));
+            console.log(`[DataManager] Raw data loaded. Inst: ${institutions.length}, Groups: ${groups.length}, Vouchers: ${vouchersData.length}`);
 
-            // חישוב כמות תלושים כוללת ללוג
-            const totalVouchers = this.data.institutions.reduce((sum, inst) =>
-                sum + inst.groups.reduce((gSum, g) => gSum + g.vouchers.length, 0), 0
-            );
+            // === עיבוד וחיבור הנתונים בזיכרון (In-Memory Join) ===
 
-            console.log(`Data loaded successfully via RPC: ${this.data.institutions.length} institutions, ${totalVouchers} vouchers`);
+            this.data.institutions = institutions.map(inst => {
+                // מציאת הקבוצות של המוסד הזה
+                const instGroups = groups.filter(g => g.institution_id === inst.id);
+
+                // עיבוד הקבוצות
+                const processedGroups = instGroups.map(group => {
+                    // מציאת התלושים של הקבוצה הזו
+                    const groupVouchers = vouchersData.filter(v => v.group_id === group.id);
+
+                    return {
+                        id: group.id,
+                        name: group.name,
+                        institutionSubsidyPercent: Number(group.institution_subsidy_percent),
+                        adminSubsidyPercent: Number(group.admin_subsidy_percent),
+                        createdAt: group.created_at,
+                        vouchers: groupVouchers.map(v => ({
+                            id: v.id,
+                            ownerName: v.owner_name,
+                            barcode: v.barcode,
+                            faceValue: Number(v.face_value),
+                            paidAmount: Number(v.paid_amount),
+                            hasWarning: v.has_warning,
+                            createdAt: v.created_at
+                        }))
+                    };
+                });
+
+                return {
+                    id: inst.id,
+                    name: inst.name,
+                    createdAt: inst.created_at,
+                    groups: processedGroups
+                };
+            });
+
+            console.log('Data structure built successfully.');
             return true;
 
         } catch (error) {
-            console.error('Error loading data from Supabase (RPC):', error);
-            Utils.showToast('שגיאה בטעינת נתונים מהענן', 'error');
+            console.error('[DataManager] Critical Error:', error);
+            Utils.showToast('שגיאה בטעינת נתונים (Global Fetch)', 'error');
             return false;
         }
     }
