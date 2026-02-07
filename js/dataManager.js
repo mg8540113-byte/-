@@ -363,3 +363,6 @@ class DataManager {
         return null;
     }
 }
+
+// יצירת מופע יחיד (Singleton)
+const dataManager = new DataManager();
